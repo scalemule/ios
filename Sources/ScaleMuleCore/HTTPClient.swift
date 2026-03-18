@@ -112,15 +112,11 @@ public actor HTTPClient {
 
             let statusCode = httpResponse.statusCode
 
-            // 202 Accepted — MFA challenge (check before general 2xx)
+            // 202 MFA_REQUIRED — backend returns error envelope with challenge JSON in error.message
+            // Wire format: { "success": false, "error": { "code": "MFA_REQUIRED", "message": "{json}" } }
             if statusCode == 202 {
-                // Try envelope-wrapped challenge first, then raw
-                if let envelope = try? Self.decoder.decode(BackendEnvelope<MFAChallenge>.self, from: data),
-                   let challenge = envelope.data {
-                    return .failure(makeMfaError(challenge))
-                }
-                if let challenge = try? Self.decoder.decode(MFAChallenge.self, from: data) {
-                    return .failure(makeMfaError(challenge))
+                if let mfaError = parseMfaChallenge(data: data) {
+                    return .failure(mfaError)
                 }
             }
 
@@ -166,17 +162,15 @@ public actor HTTPClient {
                 return .failure(parseError(data: data, statusCode: statusCode))
             }
 
-            // 403 MFA_SETUP_REQUIRED
+            // 403 MFA_SETUP_REQUIRED — backend returns error envelope with plain message
+            // Wire format: { "success": false, "error": { "code": "MFA_SETUP_REQUIRED", "message": "..." } }
             if statusCode == 403 {
-                if let setup = try? Self.decoder.decode(MFASetupRequiredResponse.self, from: data),
-                   setup.code == "MFA_SETUP_REQUIRED" {
+                if let envelope = try? Self.decoder.decode(BackendEnvelope<AnyCodable>.self, from: data),
+                   let errDetail = envelope.error, errDetail.code == "MFA_SETUP_REQUIRED" {
                     return .failure(ApiError(
                         code: .mfaSetupRequired,
-                        message: setup.message,
-                        statusCode: 403,
-                        details: [
-                            "requirement_source": AnyCodable(setup.requirementSource ?? "unknown"),
-                        ]
+                        message: errDetail.message ?? "MFA setup required",
+                        statusCode: 403
                     ))
                 }
             }
@@ -341,8 +335,16 @@ public actor HTTPClient {
         return ApiError(code: errorCodeFromStatus(statusCode), message: "Request failed with status \(statusCode)", statusCode: statusCode)
     }
 
-    private func makeMfaError(_ challenge: MFAChallenge) -> ApiError {
-        ApiError(
+    /// Parse MFA challenge from error envelope. Backend puts challenge JSON inside error.message as a string.
+    private func parseMfaChallenge(data: Data) -> ApiError? {
+        guard let envelope = try? Self.decoder.decode(BackendEnvelope<AnyCodable>.self, from: data),
+              let errDetail = envelope.error, errDetail.code == "MFA_REQUIRED",
+              let messageStr = errDetail.message,
+              let messageData = messageStr.data(using: .utf8),
+              let challenge = try? Self.decoder.decode(MFAChallenge.self, from: messageData) else {
+            return nil
+        }
+        return ApiError(
             code: .mfaRequired,
             message: "MFA verification required",
             statusCode: 202,
@@ -399,14 +401,3 @@ private struct RefreshAccessTokenResponse: Decodable {
     }
 }
 
-private struct MFASetupRequiredResponse: Decodable {
-    let code: String?
-    let message: String
-    let requirementSource: String?
-
-    private enum CodingKeys: String, CodingKey {
-        case code
-        case message
-        case requirementSource = "requirement_source"
-    }
-}

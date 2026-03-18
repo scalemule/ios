@@ -68,7 +68,7 @@ final class HTTPClientTests: XCTestCase {
         let (app, _) = createTestClient()
 
         MockURLProtocol.requestHandler = { _ in
-            TestFixtures.envelopedResponse(statusCode: 202, json: TestFixtures.mfaChallengeJSON)
+            TestFixtures.mockResponse(statusCode: 202, json: TestFixtures.mfaChallengeJSON)
         }
 
         let result: ApiResponse<AuthUser> = await app.client.request(RequestOptions(

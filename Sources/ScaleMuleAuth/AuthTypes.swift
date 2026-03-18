@@ -50,26 +50,30 @@ public struct LoginResult: Sendable, Decodable {
 }
 
 public struct LoginDeviceInfo: Sendable, Decodable, Equatable {
-    public let deviceId: String?
-    public let trusted: Bool?
-    public let fingerprint: String?
+    public let id: String
+    public let name: String
+    public let trustLevel: String
+    public let isNew: Bool
 
     private enum CodingKeys: String, CodingKey {
-        case deviceId = "device_id"
-        case trusted
-        case fingerprint
+        case id
+        case name
+        case trustLevel = "trust_level"
+        case isNew = "is_new"
     }
 }
 
 public struct LoginRiskInfo: Sendable, Decodable, Equatable {
-    public let level: String?
-    public let factors: [String]?
-    public let requiresMfa: Bool?
+    public let score: Int
+    public let action: String
+    public let factors: [String]
+    public let actionRequired: Bool?
 
     private enum CodingKeys: String, CodingKey {
-        case level
+        case score
+        case action
         case factors
-        case requiresMfa = "requires_mfa"
+        case actionRequired = "action_required"
     }
 }
 

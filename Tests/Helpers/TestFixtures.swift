@@ -33,14 +33,16 @@ public enum TestFixtures {
         "refresh_token": null,
         "access_token_expires_in": null,
         "device": {
-            "device_id": "dev_123",
-            "trusted": false,
-            "fingerprint": "fp_abc"
+            "id": "dev_123",
+            "name": "iPhone 15",
+            "trust_level": "low",
+            "is_new": true
         },
         "risk": {
-            "level": "low",
+            "score": 10,
+            "action": "allow",
             "factors": [],
-            "requires_mfa": false
+            "action_required": false
         }
     }
     """
@@ -75,12 +77,15 @@ public enum TestFixtures {
     }
     """
 
+    /// Real backend wire format: error envelope with challenge JSON string in error.message
     public static let mfaChallengeJSON = """
     {
-        "pending_token": "mfa_pending_abc",
-        "mfa_method": "totp",
-        "expires_in": 600,
-        "allowed_methods": ["totp", "sms"]
+        "success": false,
+        "error": {
+            "code": "MFA_REQUIRED",
+            "message": "{\\"pending_token\\":\\"mfa_pending_abc\\",\\"mfa_method\\":\\"totp\\",\\"expires_in\\":600,\\"allowed_methods\\":[\\"totp\\",\\"sms\\"]}"
+        },
+        "meta": {"timestamp": "2026-01-01T00:00:00Z", "request_id": "req_mfa"}
     }
     """
 

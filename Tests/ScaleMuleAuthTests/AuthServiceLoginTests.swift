@@ -55,7 +55,7 @@ final class AuthServiceLoginTests: XCTestCase {
         let auth = AuthService(client: app.client)
 
         MockURLProtocol.requestHandler = { _ in
-            TestFixtures.envelopedResponse(statusCode: 202, json: TestFixtures.mfaChallengeJSON)
+            TestFixtures.mockResponse(statusCode: 202, json: TestFixtures.mfaChallengeJSON)
         }
 
         let result = await auth.login(email: "test@example.com", password: "password123")
