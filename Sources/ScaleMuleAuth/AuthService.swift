@@ -54,8 +54,8 @@ public final class AuthService: @unchecked Sendable {
             credential: .none
         ))
 
-        if case .success(let reg) = result {
-            await app?.authState.transition(to: .pendingEmailVerification(reg.user))
+        if case .success(let user) = result {
+            await app?.authState.transition(to: .pendingEmailVerification(user))
         }
         return result
     }

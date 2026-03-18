@@ -21,6 +21,7 @@ public enum AuthState: Sendable, Equatable {
 
 public struct AuthUser: Sendable, Equatable, Codable {
     public let id: String
+    public let smApplicationId: String?
     public let email: String?
     public let phone: String?
     public let username: String?
@@ -29,11 +30,29 @@ public struct AuthUser: Sendable, Equatable, Codable {
     public let emailVerified: Bool?
     public let phoneVerified: Bool?
     public let mfaEnabled: Bool?
+    public let status: String?
     public let createdAt: String?
     public let updatedAt: String?
 
+    public init(id: String, smApplicationId: String? = nil, email: String? = nil, phone: String? = nil, username: String? = nil, fullName: String? = nil, avatarUrl: String? = nil, emailVerified: Bool? = nil, phoneVerified: Bool? = nil, mfaEnabled: Bool? = nil, status: String? = nil, createdAt: String? = nil, updatedAt: String? = nil) {
+        self.id = id
+        self.smApplicationId = smApplicationId
+        self.email = email
+        self.phone = phone
+        self.username = username
+        self.fullName = fullName
+        self.avatarUrl = avatarUrl
+        self.emailVerified = emailVerified
+        self.phoneVerified = phoneVerified
+        self.mfaEnabled = mfaEnabled
+        self.status = status
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
     private enum CodingKeys: String, CodingKey {
         case id
+        case smApplicationId = "sm_application_id"
         case email
         case phone
         case username
@@ -42,6 +61,7 @@ public struct AuthUser: Sendable, Equatable, Codable {
         case emailVerified = "email_verified"
         case phoneVerified = "phone_verified"
         case mfaEnabled = "mfa_enabled"
+        case status
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }

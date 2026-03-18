@@ -3,10 +3,9 @@ import ScaleMuleCore
 
 // MARK: - Register
 
-/// Register returns User only — NO session. Firehosy flow: register -> verify email -> login.
-public struct RegisterResult: Sendable, Decodable {
-    public let user: AuthUser
-}
+/// Register returns User directly — NO session, NO `{ user: ... }` wrapper.
+/// Backend: `{ success: true, data: { id, email, ... } }` — envelope unwrap yields User.
+public typealias RegisterResult = AuthUser
 
 // MARK: - Login
 

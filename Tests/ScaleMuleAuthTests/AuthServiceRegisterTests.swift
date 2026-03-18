@@ -30,8 +30,9 @@ final class AuthServiceRegisterTests: XCTestCase {
             name: "Test User"
         )
 
-        let register = assertApiSuccess(result)
-        XCTAssertEqual(register?.user.id, "usr_abc123")
-        XCTAssertEqual(register?.user.email, "test@example.com")
+        let user = assertApiSuccess(result)
+        XCTAssertEqual(user?.id, "usr_abc123")
+        XCTAssertEqual(user?.email, "test@example.com")
+        XCTAssertEqual(user?.status, "active")
     }
 }

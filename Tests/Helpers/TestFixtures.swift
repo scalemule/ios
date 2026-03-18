@@ -4,6 +4,7 @@ public enum TestFixtures {
     public static let userJSON = """
     {
         "id": "usr_abc123",
+        "sm_application_id": "app_123",
         "email": "test@example.com",
         "phone": null,
         "username": "testuser",
@@ -12,16 +13,14 @@ public enum TestFixtures {
         "email_verified": true,
         "phone_verified": false,
         "mfa_enabled": false,
+        "status": "active",
         "created_at": "2026-01-01T00:00:00Z",
         "updated_at": "2026-01-01T00:00:00Z"
     }
     """
 
-    public static let registerJSON = """
-    {
-        "user": \(userJSON)
-    }
-    """
+    /// Register returns User directly — no { "user": ... } wrapper
+    public static let registerJSON = userJSON
 
     public static let loginJSON = """
     {
