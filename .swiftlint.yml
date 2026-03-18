@@ -1,0 +1,12 @@
+disabled_rules:
+  - trailing_comma
+  - opening_brace
+  - line_length
+
+opt_in_rules:
+  - empty_count
+  - closure_spacing
+
+excluded:
+  - .build
+  - Tests
