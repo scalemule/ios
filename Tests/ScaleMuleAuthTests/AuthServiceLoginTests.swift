@@ -16,7 +16,7 @@ final class AuthServiceLoginTests: XCTestCase {
             XCTAssertEqual(body["email"] as? String, "test@example.com")
             XCTAssertEqual(body["password"] as? String, "password123")
 
-            return TestFixtures.mockResponse(json: TestFixtures.loginJSON)
+            return TestFixtures.envelopedResponse(json: TestFixtures.loginJSON)
         }
 
         let result = await auth.login(email: "test@example.com", password: "password123")
@@ -36,7 +36,7 @@ final class AuthServiceLoginTests: XCTestCase {
         let auth = AuthService(client: app.client)
 
         MockURLProtocol.requestHandler = { _ in
-            TestFixtures.mockResponse(json: TestFixtures.loginWithTokensJSON)
+            TestFixtures.envelopedResponse(json: TestFixtures.loginWithTokensJSON)
         }
 
         let result = await auth.login(email: "test@example.com", password: "password123")
@@ -55,7 +55,7 @@ final class AuthServiceLoginTests: XCTestCase {
         let auth = AuthService(client: app.client)
 
         MockURLProtocol.requestHandler = { _ in
-            TestFixtures.mockResponse(statusCode: 202, json: TestFixtures.mfaChallengeJSON)
+            TestFixtures.envelopedResponse(statusCode: 202, json: TestFixtures.mfaChallengeJSON)
         }
 
         let result = await auth.login(email: "test@example.com", password: "password123")

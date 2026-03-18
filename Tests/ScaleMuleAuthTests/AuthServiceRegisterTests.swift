@@ -21,7 +21,7 @@ final class AuthServiceRegisterTests: XCTestCase {
             // No Authorization header
             XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
 
-            return TestFixtures.mockResponse(json: TestFixtures.registerJSON)
+            return TestFixtures.envelopedResponse(json: TestFixtures.registerJSON)
         }
 
         let result = await auth.register(

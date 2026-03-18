@@ -114,18 +114,13 @@ public actor HTTPClient {
 
             // 202 Accepted — MFA challenge (check before general 2xx)
             if statusCode == 202 {
+                // Try envelope-wrapped challenge first, then raw
+                if let envelope = try? Self.decoder.decode(BackendEnvelope<MFAChallenge>.self, from: data),
+                   let challenge = envelope.data {
+                    return .failure(makeMfaError(challenge))
+                }
                 if let challenge = try? Self.decoder.decode(MFAChallenge.self, from: data) {
-                    return .failure(ApiError(
-                        code: .mfaRequired,
-                        message: "MFA verification required",
-                        statusCode: 202,
-                        details: [
-                            "pending_token": AnyCodable(challenge.pendingToken),
-                            "mfa_method": AnyCodable(challenge.mfaMethod),
-                            "expires_in": AnyCodable(challenge.expiresIn),
-                            "allowed_methods": AnyCodable(challenge.allowedMethods),
-                        ]
-                    ))
+                    return .failure(makeMfaError(challenge))
                 }
             }
 
@@ -136,7 +131,6 @@ public actor HTTPClient {
                     if type == EmptyResponse.self {
                         return .success(EmptyResponse() as! T)
                     }
-                    // Try to decode empty JSON object
                     let emptyData = "{}".data(using: .utf8)!
                     do {
                         let decoded = try Self.decoder.decode(T.self, from: emptyData)
@@ -147,6 +141,12 @@ public actor HTTPClient {
                 }
 
                 do {
+                    // Try envelope-wrapped response first: { "success": true, "data": T }
+                    if let envelope = try? Self.decoder.decode(BackendEnvelope<T>.self, from: data),
+                       envelope.success, let payload = envelope.data {
+                        return .success(payload)
+                    }
+                    // Fallback: try decoding T directly (for non-enveloped endpoints)
                     let decoded = try Self.decoder.decode(T.self, from: data)
                     return .success(decoded)
                 } catch {
@@ -244,7 +244,14 @@ public actor HTTPClient {
                 return false
             }
 
-            let result = try Self.decoder.decode(RefreshAccessTokenResponse.self, from: data)
+            // Try envelope first, then raw
+            let result: RefreshAccessTokenResponse
+            if let envelope = try? Self.decoder.decode(BackendEnvelope<RefreshAccessTokenResponse>.self, from: data),
+               let payload = envelope.data {
+                result = payload
+            } else {
+                result = try Self.decoder.decode(RefreshAccessTokenResponse.self, from: data)
+            }
             let expiresAt = Date().addingTimeInterval(TimeInterval(result.expiresIn))
             try await sessionManager.updateAccessToken(result.accessToken, expiresAt: expiresAt)
             return true
@@ -318,12 +325,34 @@ public actor HTTPClient {
     // MARK: - Error Parsing
 
     private func parseError(data: Data, statusCode: Int) -> ApiError {
+        // Try envelope-wrapped error: { "success": false, "error": { "code", "message" } }
+        if let envelope = try? Self.decoder.decode(BackendEnvelope<AnyCodable>.self, from: data),
+           !envelope.success, let errDetail = envelope.error {
+            let code = errDetail.code.flatMap { ErrorCode(rawValue: $0) } ?? errorCodeFromStatus(statusCode)
+            let message = errDetail.message ?? "Request failed"
+            return ApiError(code: code, message: message, statusCode: statusCode)
+        }
+        // Try flat error response
         if let errResponse = try? Self.decoder.decode(ErrorResponse.self, from: data) {
             let code = errResponse.code.flatMap { ErrorCode(rawValue: $0) } ?? errorCodeFromStatus(statusCode)
             let message = errResponse.message ?? errResponse.error ?? "Request failed"
             return ApiError(code: code, message: message, statusCode: statusCode, details: errResponse.details)
         }
         return ApiError(code: errorCodeFromStatus(statusCode), message: "Request failed with status \(statusCode)", statusCode: statusCode)
+    }
+
+    private func makeMfaError(_ challenge: MFAChallenge) -> ApiError {
+        ApiError(
+            code: .mfaRequired,
+            message: "MFA verification required",
+            statusCode: 202,
+            details: [
+                "pending_token": AnyCodable(challenge.pendingToken),
+                "mfa_method": AnyCodable(challenge.mfaMethod),
+                "expires_in": AnyCodable(challenge.expiresIn),
+                "allowed_methods": AnyCodable(challenge.allowedMethods),
+            ]
+        )
     }
 
     private func errorCodeFromStatus(_ statusCode: Int) -> ErrorCode {
@@ -362,10 +391,22 @@ private struct RefreshAccessTokenResponse: Decodable {
     let accessToken: String
     let tokenType: String
     let expiresIn: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case accessToken = "access_token"
+        case tokenType = "token_type"
+        case expiresIn = "expires_in"
+    }
 }
 
 private struct MFASetupRequiredResponse: Decodable {
     let code: String?
     let message: String
     let requirementSource: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case code
+        case message
+        case requirementSource = "requirement_source"
+    }
 }

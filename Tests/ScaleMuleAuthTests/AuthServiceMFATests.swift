@@ -16,7 +16,7 @@ final class AuthServiceMFATests: XCTestCase {
             XCTAssertEqual(body["pending_token"] as? String, "mfa_pending_abc")
             XCTAssertEqual(body["code"] as? String, "123456")
 
-            return TestFixtures.mockResponse(json: TestFixtures.mfaVerifyJSON)
+            return TestFixtures.envelopedResponse(json: TestFixtures.mfaVerifyJSON)
         }
 
         let result = await auth.mfa.verify(pendingToken: "mfa_pending_abc", code: "123456")
@@ -37,7 +37,7 @@ final class AuthServiceMFATests: XCTestCase {
             XCTAssertEqual(body["pending_token"] as? String, "mfa_pending_abc")
             XCTAssertEqual(body["method"] as? String, "sms")
 
-            return TestFixtures.mockResponse(json: """
+            return TestFixtures.envelopedResponse(json: """
             {"message": "Code sent", "expires_in": 300}
             """)
         }
@@ -56,7 +56,7 @@ final class AuthServiceMFATests: XCTestCase {
 
         MockURLProtocol.requestHandler = { request in
             XCTAssertNotNil(request.value(forHTTPHeaderField: "Authorization"))
-            return TestFixtures.mockResponse(json: """
+            return TestFixtures.envelopedResponse(json: """
             {"enabled": true, "methods": ["totp"], "backup_codes_remaining": 8}
             """)
         }

@@ -53,6 +53,13 @@ public struct MFAChallenge: Sendable, Equatable, Codable {
     public let expiresIn: Int
     public let allowedMethods: [String]
 
+    public init(pendingToken: String, mfaMethod: String, expiresIn: Int, allowedMethods: [String]) {
+        self.pendingToken = pendingToken
+        self.mfaMethod = mfaMethod
+        self.expiresIn = expiresIn
+        self.allowedMethods = allowedMethods
+    }
+
     private enum CodingKeys: String, CodingKey {
         case pendingToken = "pending_token"
         case mfaMethod = "mfa_method"
@@ -64,6 +71,11 @@ public struct MFAChallenge: Sendable, Equatable, Codable {
 public struct MFASetupRequirement: Sendable, Equatable, Codable {
     public let message: String
     public let requirementSource: String
+
+    public init(message: String, requirementSource: String) {
+        self.message = message
+        self.requirementSource = requirementSource
+    }
 
     private enum CodingKeys: String, CodingKey {
         case message

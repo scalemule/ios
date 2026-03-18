@@ -21,7 +21,7 @@ final class AuthServiceRefreshTests: XCTestCase {
             let body = self.bodyJSON(request)!
             XCTAssertEqual(body["session_token"] as? String, "sess_to_refresh")
 
-            return TestFixtures.mockResponse(json: TestFixtures.refreshSessionJSON)
+            return TestFixtures.envelopedResponse(json: TestFixtures.refreshSessionJSON)
         }
 
         let result = await auth.refreshSession()
@@ -45,7 +45,7 @@ final class AuthServiceRefreshTests: XCTestCase {
             let body = self.bodyJSON(request)!
             XCTAssertEqual(body["refresh_token"] as? String, "rt_abc123")
 
-            return TestFixtures.mockResponse(json: """
+            return TestFixtures.envelopedResponse(json: """
             {"access_token": "at_new_jwt", "token_type": "Bearer", "expires_in": 3600}
             """)
         }

@@ -16,7 +16,7 @@ final class PermissionsServiceTests: XCTestCase {
             // Backend expects role_name, not name
             XCTAssertEqual(body["role_name"] as? String, "admin")
             XCTAssertNil(body["name"])
-            return TestFixtures.mockResponse(json: TestFixtures.roleJSON)
+            return TestFixtures.envelopedResponse(json: TestFixtures.roleJSON)
         }
 
         let result = await permissions.createRole(roleName: "admin", description: "Administrator")
@@ -32,7 +32,7 @@ final class PermissionsServiceTests: XCTestCase {
         try? await app.sessionManager.setCredentials(creds)
 
         MockURLProtocol.requestHandler = { _ in
-            TestFixtures.mockResponse(json: TestFixtures.checkPermissionJSON)
+            TestFixtures.envelopedResponse(json: TestFixtures.checkPermissionJSON)
         }
 
         let result = await permissions.check(
@@ -60,7 +60,7 @@ final class PermissionsServiceTests: XCTestCase {
             XCTAssertEqual(checks?.count, 2)
             XCTAssertNil(body["permissions"])
 
-            return TestFixtures.mockResponse(json: """
+            return TestFixtures.envelopedResponse(json: """
             {"results": [
                 {"permission": "read", "granted": true, "resource_type": null, "resource_id": null},
                 {"permission": "write", "granted": false, "resource_type": null, "resource_id": null}
@@ -89,7 +89,7 @@ final class PermissionsServiceTests: XCTestCase {
         try? await app.sessionManager.setCredentials(creds)
 
         MockURLProtocol.requestHandler = { _ in
-            TestFixtures.mockResponse(json: """
+            TestFixtures.envelopedResponse(json: """
             {"decision": "allow", "matched_policies": ["policy_1"], "reason": "Role match", "evaluation_time_ms": 1.5}
             """)
         }

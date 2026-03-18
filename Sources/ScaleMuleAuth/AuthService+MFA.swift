@@ -1,11 +1,13 @@
 import Foundation
 import ScaleMuleCore
 
-public final class AuthMFASubService: Sendable {
+public final class AuthMFASubService: @unchecked Sendable {
     private let client: HTTPClient
+    private let app: ScaleMuleApp?
 
-    init(client: HTTPClient) {
+    init(client: HTTPClient, app: ScaleMuleApp? = nil) {
         self.client = client
+        self.app = app
     }
 
     // MARK: - A33: Get MFA Status
@@ -97,16 +99,22 @@ public final class AuthMFASubService: Sendable {
 
     // MARK: - A41: Verify MFA
 
-    /// Verify MFA during login challenge. Uses pending_token, NOT session auth.
+    /// Verify MFA during login challenge. On success, persists credentials and transitions to .authenticated.
     public func verify(pendingToken: String, code: String, method: String? = nil) async -> ApiResponse<MfaVerifyResult> {
+        await app?.authState.transition(to: .loading)
+
         var body: [String: Any] = ["pending_token": pendingToken, "code": code]
         if let method { body["method"] = method }
 
-        return await client.request(RequestOptions(
+        let result: ApiResponse<MfaVerifyResult> = await client.request(RequestOptions(
             method: .post,
             path: "/v1/auth/mfa/verify",
             body: body,
             credential: .none
         ))
+        if case .success(let verify) = result, let creds = verify.toCredentialSet(), let user = verify.user {
+            await app?.setCredentials(creds, user: user)
+        }
+        return result
     }
 }

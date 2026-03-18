@@ -180,13 +180,13 @@ public enum TestFixtures {
     {
         "id": "ws_1",
         "sm_application_id": "app_123",
+        "kind": "workspace",
         "name": "Test Workspace",
         "description": "A test workspace",
-        "owner_id": "usr_abc123",
-        "member_count": 1,
-        "settings": null,
-        "created_at": "2026-01-01T00:00:00Z",
-        "updated_at": "2026-01-01T00:00:00Z"
+        "owner_user_id": "usr_abc123",
+        "plan_type": "free",
+        "member_limit": 50,
+        "created_at": "2026-01-01T00:00:00Z"
     }
     """
 
@@ -194,13 +194,14 @@ public enum TestFixtures {
     {
         "id": "mem_1",
         "container_id": "ws_1",
-        "user_id": "usr_abc123",
+        "workspace_id": "ws_1",
+        "team_id": "ws_1",
+        "sm_user_id": "usr_abc123",
         "role": "owner",
         "full_name": "Test User",
         "email": "test@example.com",
         "avatar_url": null,
-        "joined_at": "2026-01-01T00:00:00Z",
-        "created_at": "2026-01-01T00:00:00Z"
+        "joined_at": "2026-01-01T00:00:00Z"
     }
     """
 
@@ -218,6 +219,13 @@ public enum TestFixtures {
     }
     """
 
+    /// Wrap raw model JSON in the backend envelope: { "success": true, "data": T, "meta": {...} }
+    public static func envelope(_ rawJSON: String) -> String {
+        """
+        {"success": true, "data": \(rawJSON), "meta": {"timestamp": "2026-01-01T00:00:00Z", "request_id": "req_test"}}
+        """
+    }
+
     public static func jsonData(_ json: String) -> Data {
         json.data(using: .utf8)!
     }
@@ -230,5 +238,10 @@ public enum TestFixtures {
             headerFields: ["Content-Type": "application/json"]
         )!
         return (response, jsonData(json))
+    }
+
+    /// Convenience: envelope-wrapped mock response
+    public static func envelopedResponse(statusCode: Int = 200, json: String) -> (HTTPURLResponse, Data) {
+        mockResponse(statusCode: statusCode, json: envelope(json))
     }
 }

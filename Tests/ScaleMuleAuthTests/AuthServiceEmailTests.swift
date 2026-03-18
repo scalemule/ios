@@ -14,7 +14,7 @@ final class AuthServiceEmailTests: XCTestCase {
             let body = self.bodyJSON(request)!
             XCTAssertEqual(body["token"] as? String, "verify_token_123")
 
-            return TestFixtures.mockResponse(json: TestFixtures.verifyEmailJSON)
+            return TestFixtures.envelopedResponse(json: TestFixtures.verifyEmailJSON)
         }
 
         let result = await auth.verifyEmail(token: "verify_token_123")
@@ -35,7 +35,7 @@ final class AuthServiceEmailTests: XCTestCase {
         let auth = AuthService(client: app.client)
 
         MockURLProtocol.requestHandler = { _ in
-            TestFixtures.mockResponse(json: """
+            TestFixtures.envelopedResponse(json: """
             {"verified": true, "session_token": null, "user": null, "expires_at": null}
             """)
         }
@@ -53,7 +53,7 @@ final class AuthServiceEmailTests: XCTestCase {
         let auth = AuthService(client: app.client)
 
         MockURLProtocol.requestHandler = { _ in
-            TestFixtures.mockResponse(json: TestFixtures.messageJSON)
+            TestFixtures.envelopedResponse(json: TestFixtures.messageJSON)
         }
 
         let result = await auth.resendVerification(email: "test@example.com")

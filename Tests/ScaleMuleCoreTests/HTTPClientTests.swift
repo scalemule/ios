@@ -9,7 +9,7 @@ final class HTTPClientTests: XCTestCase {
         MockURLProtocol.requestHandler = { request in
             XCTAssertEqual(request.value(forHTTPHeaderField: "x-api-key"), "pk_test_abc123")
             XCTAssertTrue(request.value(forHTTPHeaderField: "User-Agent")?.contains("ScaleMule-SDK-Swift") ?? false)
-            return TestFixtures.mockResponse(json: TestFixtures.userJSON)
+            return TestFixtures.envelopedResponse(json: TestFixtures.userJSON)
         }
 
         let result: ApiResponse<AuthUser> = await app.client.request(RequestOptions(
@@ -68,7 +68,7 @@ final class HTTPClientTests: XCTestCase {
         let (app, _) = createTestClient()
 
         MockURLProtocol.requestHandler = { _ in
-            TestFixtures.mockResponse(statusCode: 202, json: TestFixtures.mfaChallengeJSON)
+            TestFixtures.envelopedResponse(statusCode: 202, json: TestFixtures.mfaChallengeJSON)
         }
 
         let result: ApiResponse<AuthUser> = await app.client.request(RequestOptions(

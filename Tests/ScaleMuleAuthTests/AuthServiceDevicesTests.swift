@@ -12,7 +12,7 @@ final class AuthServiceDevicesTests: XCTestCase {
         try? await app.sessionManager.setCredentials(creds)
 
         MockURLProtocol.requestHandler = { _ in
-            TestFixtures.mockResponse(json: TestFixtures.devicesListJSON)
+            TestFixtures.envelopedResponse(json: TestFixtures.devicesListJSON)
         }
 
         let result = await auth.devices.list()

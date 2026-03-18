@@ -10,7 +10,7 @@ final class AuthServicePasswordTests: XCTestCase {
 
         MockURLProtocol.requestHandler = { request in
             XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
-            return TestFixtures.mockResponse(json: TestFixtures.messageJSON)
+            return TestFixtures.envelopedResponse(json: TestFixtures.messageJSON)
         }
 
         let result = await auth.forgotPassword(email: "test@example.com")
@@ -25,7 +25,7 @@ final class AuthServicePasswordTests: XCTestCase {
             let body = self.bodyJSON(request)!
             XCTAssertEqual(body["token"] as? String, "reset_token")
             XCTAssertEqual(body["new_password"] as? String, "newpass123")
-            return TestFixtures.mockResponse(json: TestFixtures.messageJSON)
+            return TestFixtures.envelopedResponse(json: TestFixtures.messageJSON)
         }
 
         let result = await auth.resetPassword(token: "reset_token", newPassword: "newpass123")
@@ -41,7 +41,7 @@ final class AuthServicePasswordTests: XCTestCase {
 
         MockURLProtocol.requestHandler = { request in
             XCTAssertNotNil(request.value(forHTTPHeaderField: "Authorization"))
-            return TestFixtures.mockResponse(json: TestFixtures.messageJSON)
+            return TestFixtures.envelopedResponse(json: TestFixtures.messageJSON)
         }
 
         let result = await auth.changePassword(currentPassword: "oldpass", newPassword: "newpass")

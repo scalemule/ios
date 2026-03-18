@@ -48,9 +48,7 @@ public final class ScaleMuleApp: Sendable {
         await networkMonitor.start()
 
         if let creds = await sessionManager.restore() {
-            // Validate session is not expired
             if creds.sessionExpiresAt > Date() {
-                // Fetch user profile to confirm session is valid
                 let options = RequestOptions(
                     method: .get,
                     path: "/v1/auth/me",
@@ -73,10 +71,13 @@ public final class ScaleMuleApp: Sendable {
         }
     }
 
-    public func setCredentials(_ credentials: CredentialSet) async {
+    /// Persist credentials and transition auth state to authenticated.
+    public func setCredentials(_ credentials: CredentialSet, user: AuthUser) async {
         try? await sessionManager.setCredentials(credentials)
+        await authState.transition(to: .authenticated(user))
     }
 
+    /// Clear all credentials and transition auth state to unauthenticated.
     public func clearSession() async {
         await sessionManager.clear()
         await authState.transition(to: .unauthenticated)

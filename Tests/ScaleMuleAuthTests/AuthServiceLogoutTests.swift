@@ -22,7 +22,7 @@ final class AuthServiceLogoutTests: XCTestCase {
             let body = self.bodyJSON(request)!
             XCTAssertEqual(body["session_token"] as? String, "sess_test_123")
 
-            return TestFixtures.mockResponse(json: "{}")
+            return TestFixtures.envelopedResponse(json: "null")
         }
 
         let result = await auth.logout()

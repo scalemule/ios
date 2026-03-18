@@ -13,7 +13,7 @@ final class AuthServiceSessionsTests: XCTestCase {
 
         MockURLProtocol.requestHandler = { request in
             XCTAssertTrue(request.value(forHTTPHeaderField: "Authorization")?.contains("sess_123") ?? false)
-            return TestFixtures.mockResponse(json: TestFixtures.sessionsListJSON)
+            return TestFixtures.envelopedResponse(json: TestFixtures.sessionsListJSON)
         }
 
         let result = await auth.sessions.list()
@@ -32,7 +32,7 @@ final class AuthServiceSessionsTests: XCTestCase {
         try? await app.sessionManager.setCredentials(creds)
 
         MockURLProtocol.requestHandler = { _ in
-            TestFixtures.mockResponse(json: """
+            TestFixtures.envelopedResponse(json: """
             {"message": "Session revoked"}
             """)
         }

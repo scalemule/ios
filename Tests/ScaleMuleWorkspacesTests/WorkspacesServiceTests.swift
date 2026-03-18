@@ -15,7 +15,7 @@ final class WorkspacesServiceTests: XCTestCase {
             XCTAssertEqual(request.httpMethod, "POST")
             let body = self.bodyJSON(request)!
             XCTAssertEqual(body["name"] as? String, "My Workspace")
-            return TestFixtures.mockResponse(json: TestFixtures.workspaceJSON)
+            return TestFixtures.envelopedResponse(json: TestFixtures.workspaceJSON)
         }
 
         let result = await workspaces.create(name: "My Workspace", description: "A test workspace")
@@ -31,7 +31,7 @@ final class WorkspacesServiceTests: XCTestCase {
         try? await app.sessionManager.setCredentials(creds)
 
         MockURLProtocol.requestHandler = { _ in
-            TestFixtures.mockResponse(json: "[\(TestFixtures.workspaceJSON)]")
+            TestFixtures.envelopedResponse(json: "[\(TestFixtures.workspaceJSON)]")
         }
 
         let result = await workspaces.list()
@@ -70,7 +70,7 @@ final class WorkspacesServiceTests: XCTestCase {
         MockURLProtocol.requestHandler = { request in
             let url = request.url!
             XCTAssertTrue(url.query?.contains("hydrate=true") ?? false)
-            return TestFixtures.mockResponse(json: "[\(TestFixtures.memberJSON)]")
+            return TestFixtures.envelopedResponse(json: "[\(TestFixtures.memberJSON)]")
         }
 
         let result = await workspaces.listMembers(workspaceId: "ws_1", hydrate: true)
@@ -108,7 +108,7 @@ final class WorkspacesServiceTests: XCTestCase {
         try? await app.sessionManager.setCredentials(creds)
 
         MockURLProtocol.requestHandler = { _ in
-            TestFixtures.mockResponse(json: TestFixtures.invitationJSON)
+            TestFixtures.envelopedResponse(json: TestFixtures.invitationJSON)
         }
 
         let result = await workspaces.invite(workspaceId: "ws_1", email: "invite@example.com", role: "member")

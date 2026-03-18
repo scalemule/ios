@@ -14,7 +14,7 @@ final class AuthServiceLoginHistoryTests: XCTestCase {
         MockURLProtocol.requestHandler = { request in
             let url = request.url!
             XCTAssertTrue(url.path.contains("/v1/auth/login-history"))
-            return TestFixtures.mockResponse(json: TestFixtures.loginHistoryJSON)
+            return TestFixtures.envelopedResponse(json: TestFixtures.loginHistoryJSON)
         }
 
         let result = await auth.loginHistory.list(page: 1, perPage: 20)
@@ -34,7 +34,7 @@ final class AuthServiceLoginHistoryTests: XCTestCase {
         try? await app.sessionManager.setCredentials(creds)
 
         MockURLProtocol.requestHandler = { _ in
-            TestFixtures.mockResponse(json: """
+            TestFixtures.envelopedResponse(json: """
             {
                 "total_logins": 50,
                 "successful_logins": 48,

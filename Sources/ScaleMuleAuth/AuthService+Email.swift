@@ -5,12 +5,16 @@ extension AuthService {
     // MARK: - A03: Verify Email
 
     public func verifyEmail(token: String) async -> ApiResponse<VerifyEmailResult> {
-        await client.request(RequestOptions(
+        let result: ApiResponse<VerifyEmailResult> = await client.request(RequestOptions(
             method: .post,
             path: "/v1/auth/verify-email",
             body: ["token": token],
             credential: .none
         ))
+        if case .success(let verify) = result, let creds = verify.toCredentialSet(), let user = verify.user {
+            await app?.setCredentials(creds, user: user)
+        }
+        return result
     }
 
     // MARK: - A04: Resend Verification

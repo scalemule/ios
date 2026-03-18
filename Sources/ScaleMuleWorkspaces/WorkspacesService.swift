@@ -107,7 +107,7 @@ public final class WorkspacesService: ServiceModule {
     // MARK: - W08: Add Member
 
     public func addMember(workspaceId: String, userId: String, role: String? = nil) async -> ApiResponse<MemberResponse> {
-        var body: [String: Any] = ["user_id": userId]
+        var body: [String: Any] = ["sm_user_id": userId]
         if let role { body["role"] = role }
 
         return await client.request(RequestOptions(
