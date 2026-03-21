@@ -37,7 +37,10 @@ public final class AuthService: @unchecked Sendable {
         password: String,
         name: String? = nil,
         username: String? = nil,
-        phone: String? = nil
+        phone: String? = nil,
+        tosAccepted: Bool? = nil,
+        tosVersion: String? = nil,
+        privacyPolicyVersion: String? = nil
     ) async -> ApiResponse<RegisterResult> {
         var body: [String: Any] = [
             "email": email,
@@ -46,6 +49,9 @@ public final class AuthService: @unchecked Sendable {
         if let name { body["full_name"] = name }
         if let username { body["username"] = username }
         if let phone { body["phone"] = phone }
+        if let tosAccepted { body["tos_accepted"] = tosAccepted }
+        if let tosVersion { body["tos_version"] = tosVersion }
+        if let privacyPolicyVersion { body["privacy_policy_version"] = privacyPolicyVersion }
 
         let result: ApiResponse<RegisterResult> = await client.request(RequestOptions(
             method: .post,

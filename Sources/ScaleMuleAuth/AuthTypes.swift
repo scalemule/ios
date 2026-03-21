@@ -171,6 +171,14 @@ public struct ChangePhoneResult: Sendable, Decodable {
     }
 }
 
+// MARK: - Verify Phone OTP
+
+/// Response from POST /v1/auth/phone/verify-otp — confirms verification, no session.
+public struct VerifyPhoneOtpResult: Sendable, Decodable {
+    public let verified: Bool
+    public let message: String
+}
+
 // MARK: - Phone OTP
 
 public struct PhoneOtpResult: Sendable, Decodable {

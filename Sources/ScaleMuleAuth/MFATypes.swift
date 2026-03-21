@@ -83,7 +83,9 @@ public enum MfaSendChannel: String, Sendable {
 }
 
 public enum OtpPurpose: String, Sendable {
+    case verifyPhone = "verify_phone"
+    case verifyEmail = "verify_email"
     case login
-    case verification
     case passwordReset = "password_reset"
+    case changePhone = "change_phone"
 }

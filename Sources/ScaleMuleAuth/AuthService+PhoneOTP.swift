@@ -15,22 +15,13 @@ extension AuthService {
 
     // MARK: - A12: Verify Phone OTP
 
-    public func verifyPhoneOtp(phone: String, code: String) async -> ApiResponse<LoginResult> {
+    /// Backend returns `{ verified: true, message: "..." }`, NOT a login session.
+    /// Clients should re-call `sendPhoneOtp` if they need to resend — there is no dedicated resend endpoint.
+    public func verifyPhoneOtp(phone: String, code: String) async -> ApiResponse<VerifyPhoneOtpResult> {
         await client.request(RequestOptions(
             method: .post,
             path: "/v1/auth/phone/verify-otp",
             body: ["phone": phone, "code": code],
-            credential: .none
-        ))
-    }
-
-    // MARK: - A13: Resend Phone OTP
-
-    public func resendPhoneOtp(phone: String) async -> ApiResponse<PhoneOtpResult> {
-        await client.request(RequestOptions(
-            method: .post,
-            path: "/v1/auth/phone/resend-otp",
-            body: ["phone": phone],
             credential: .none
         ))
     }

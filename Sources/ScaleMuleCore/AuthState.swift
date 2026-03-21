@@ -13,6 +13,8 @@ public enum AuthState: Sendable, Equatable {
     case mfaRequired(MFAChallenge)
     /// Login returned 403 — user must set up MFA (policy)
     case mfaSetupRequired(MFASetupRequirement)
+    /// Authenticated but app-defined post-auth setup not yet complete
+    case pendingOnboarding(AuthUser)
     /// No session / logged out / session expired
     case unauthenticated
     /// Auth operation failed
