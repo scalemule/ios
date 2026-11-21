@@ -1,11 +1,17 @@
 import Foundation
 import ScaleMule
 
-// Integration test against api-dev.scalemule.com
+// Integration test against the gateway in SM_BASE_URL using the key in SM_API_KEY
 // Tests the register → login → me → logout flow
 
-let apiKey = ProcessInfo.processInfo.environment["SM_API_KEY"] ?? "sm_sk_development_019cff63a10171929c0102ba2ce5580c"
-let baseURL = ProcessInfo.processInfo.environment["SM_BASE_URL"] ?? "https://api-dev.scalemule.com"
+guard let apiKey = ProcessInfo.processInfo.environment["SM_API_KEY"], !apiKey.isEmpty else {
+    print("[iOS SDK E2E] FAIL: set SM_API_KEY to the test app's API key")
+    exit(1)
+}
+guard let baseURL = ProcessInfo.processInfo.environment["SM_BASE_URL"], !baseURL.isEmpty else {
+    print("[iOS SDK E2E] FAIL: set SM_BASE_URL to the gateway to test against")
+    exit(1)
+}
 
 let testEmail = "ios-sdk-test-\(UUID().uuidString.prefix(8).lowercased())@test.scalemule.dev"
 let testPassword = "TestP@ss123!"
