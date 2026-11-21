@@ -24,13 +24,25 @@ public struct ApiError: Error, Sendable, Equatable {
     public let code: ErrorCode
     public let message: String
     public let statusCode: Int?
+    /// Extra fields the server sent with the error. For an envelope error that
+    /// carries a `data` object (for example `LINK_REQUIRED`), these are its fields.
     public let details: [String: AnyCodable]?
+    /// The exact `code` string the server returned, also when `code` could only
+    /// be mapped to a generic case such as `.conflict` or `.forbidden`.
+    public let rawCode: String?
 
-    public init(code: ErrorCode, message: String, statusCode: Int? = nil, details: [String: AnyCodable]? = nil) {
+    public init(
+        code: ErrorCode,
+        message: String,
+        statusCode: Int? = nil,
+        details: [String: AnyCodable]? = nil,
+        rawCode: String? = nil
+    ) {
         self.code = code
         self.message = message
         self.statusCode = statusCode
         self.details = details
+        self.rawCode = rawCode ?? code.rawValue
     }
 
     public static func network(_ message: String) -> ApiError {
