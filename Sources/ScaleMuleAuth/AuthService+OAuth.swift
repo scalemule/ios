@@ -5,20 +5,36 @@ extension AuthService {
     // MARK: - A19: Get OAuth URL
 
     /// Get the authorization URL for an OAuth provider.
-    /// NOTE: Backend builds URL with server-side config — does not accept client-side redirectUri.
-    /// Native app redirect support (custom scheme / universal links) requires backend work.
-    public func getOAuthUrl(provider: String) async -> ApiResponse<OAuthUrl> {
-        await client.request(RequestOptions(
+    ///
+    /// - Parameters:
+    ///   - redirectUri: where the provider sends the user back. Native apps pass
+    ///     their own callback (for example `myapp://oauth/ledvery/callback`); it
+    ///     must be registered with the provider. `nil` uses the app's configured one.
+    ///   - upstream: for `ledvery`, which sign-in Ledvery should open (see `LedveryUpstream`).
+    ///   - prompt: OIDC `prompt` (`login`, `select_account`, `consent` or `none`).
+    public func getOAuthUrl(
+        provider: String,
+        redirectUri: String? = nil,
+        upstream: String? = nil,
+        prompt: String? = nil
+    ) async -> ApiResponse<OAuthUrl> {
+        var query: [String: String] = [:]
+        if let redirectUri { query["redirect_uri"] = redirectUri }
+        if let upstream { query["upstream"] = upstream }
+        if let prompt { query["prompt"] = prompt }
+        return await client.request(RequestOptions(
             method: .get,
             path: "/v1/auth/oauth/\(provider)/authorize",
+            query: query.isEmpty ? nil : query,
             credential: .none
         ))
     }
 
     // MARK: - A20: Handle OAuth Callback
 
-    /// Exchange an OAuth authorization code for a session.
-    /// Blocked on backend native redirect support (A19).
+    /// Exchange an OAuth authorization code for a session. Returns the result
+    /// only; call `app.setCredentials` to sign in, or use `signInWithLedvery`,
+    /// which does both.
     public func handleOAuthCallback(
         provider: String,
         code: String,

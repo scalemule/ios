@@ -96,12 +96,15 @@ public struct OAuthCallbackResult: Sendable, Decodable {
     public let user: AuthUser
     public let expiresAt: String
     public let isNewUser: Bool
+    /// True when this sign-in was just attached to an existing account.
+    public let isNewLink: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case sessionToken = "session_token"
         case user
         case expiresAt = "expires_at"
         case isNewUser = "is_new_user"
+        case isNewLink = "is_new_link"
     }
 
     public func toCredentialSet() -> CredentialSet {

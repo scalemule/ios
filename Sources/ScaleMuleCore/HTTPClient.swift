@@ -324,13 +324,20 @@ public actor HTTPClient {
            !envelope.success, let errDetail = envelope.error {
             let code = errDetail.code.flatMap { ErrorCode(rawValue: $0) } ?? errorCodeFromStatus(statusCode)
             let message = errDetail.message ?? "Request failed"
-            return ApiError(code: code, message: message, statusCode: statusCode)
+            let details = (envelope.data?.value as? [String: Any])?.mapValues { AnyCodable($0) }
+            return ApiError(
+                code: code,
+                message: message,
+                statusCode: statusCode,
+                details: details,
+                rawCode: errDetail.code
+            )
         }
         // Try flat error response
         if let errResponse = try? Self.decoder.decode(ErrorResponse.self, from: data) {
             let code = errResponse.code.flatMap { ErrorCode(rawValue: $0) } ?? errorCodeFromStatus(statusCode)
             let message = errResponse.message ?? errResponse.error ?? "Request failed"
-            return ApiError(code: code, message: message, statusCode: statusCode, details: errResponse.details)
+            return ApiError(code: code, message: message, statusCode: statusCode, details: errResponse.details, rawCode: errResponse.code)
         }
         return ApiError(code: errorCodeFromStatus(statusCode), message: "Request failed with status \(statusCode)", statusCode: statusCode)
     }

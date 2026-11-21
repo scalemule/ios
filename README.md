@@ -73,6 +73,38 @@ for await state in await app.authStateStream() {
 }
 ```
 
+## Sign in with Ledvery (Google)
+
+Ledvery is ScaleMule's shared account service: one account and one Google
+sign-in work in every ScaleMule app. The app never holds a Ledvery secret; the
+auth service keeps it and turns Ledvery's one-time code into a session.
+
+Before it works, the app needs a Ledvery client whose redirect list contains the
+app's callback (for example `myapp://oauth/ledvery/callback`) and a `ledvery`
+OAuth config in the auth service. The ScaleMule team provisions both.
+
+```swift
+let callback = URL(string: "myapp://oauth/ledvery/callback")!
+
+switch await auth.signInWithLedvery(upstream: .google, callbackURL: callback) {
+case .success(.signedIn(let user, _)):
+    // Session stored; auth state is now .authenticated(user).
+    print("Signed in as \(user.email ?? user.id)")
+case .success(.linkRequired(let challenge)):
+    // This email already has an account in the app. Ask for its password:
+    let linked = await auth.linkLedveryAccount(challengeId: challenge.challengeId, password: password)
+    // linked can also ask for .mfaCodeRequired or .emailCodeRequired; call again with the code.
+case .failure(let error) where error.rawCode == AuthService.signInCancelledCode:
+    break // the person closed the sheet
+case .failure(let error):
+    print(error.message)
+}
+```
+
+The sheet shares Safari's cookies, so someone already signed in to Ledvery on
+another ScaleMule site continues in one tap. `startLedverySignIn` and
+`completeLedverySignIn` are available for apps that present the web page themselves.
+
 ## Auth Credential Model
 
 ScaleMule uses a multi-credential system, not a single bearer token:
