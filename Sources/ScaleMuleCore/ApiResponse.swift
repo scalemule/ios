@@ -88,3 +88,43 @@ struct BackendMeta: Decodable {
         case requestId = "request_id"
     }
 }
+
+// MARK: - Text for people
+
+extension ApiError: LocalizedError {
+    /// `localizedDescription` is the person-facing text, never "An internal error occurred".
+    public var errorDescription: String? { userFacingMessage }
+
+    /// Server codes for a request refused by the gateway's anti-abuse checks
+    /// because of the network it came from.
+    static let networkRefusedCodes: Set<String> = ["TRUST_SCORE_TOO_LOW", "IP_BLOCKED", "BLOCKED"]
+
+    /// Text that is safe to show a person: it says what happened in plain
+    /// words and what to do next. Server failures, network problems, rate
+    /// limits and anti-abuse refusals get fixed wording; any other error keeps
+    /// the server's own message, which is written for people.
+    public var userFacingMessage: String {
+        if let rawCode, Self.networkRefusedCodes.contains(rawCode) {
+            return "We couldn't do that from the network you're on right now. Wait a few minutes and try again, or switch between Wi-Fi and mobile data."
+        }
+        switch code {
+        case .networkError:
+            return "You seem to be offline. Check your connection and try again."
+        case .timeout:
+            return "This is taking too long. Check your connection and try again."
+        case .rateLimited:
+            return "Too many tries. Wait a minute and try again."
+        case .internalError, .unknown:
+            if statusCode == nil || (statusCode ?? 0) >= 500 {
+                return "Something went wrong on our side. Please try again in a minute."
+            }
+        default:
+            break
+        }
+        if let statusCode, statusCode >= 500 {
+            return "Something went wrong on our side. Please try again in a minute."
+        }
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Something went wrong. Please try again." : trimmed
+    }
+}
