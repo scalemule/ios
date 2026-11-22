@@ -108,7 +108,10 @@ public final class AuthService: @unchecked Sendable {
             } else if error.code == .mfaSetupRequired {
                 let req = MFASetupRequirement(
                     message: error.message,
-                    requirementSource: (error.details?["requirement_source"]?.value as? String) ?? "unknown"
+                    requirementSource: (error.details?["requirement_source"]?.value as? String) ?? "unknown",
+                    setupToken: error.details?["setup_token"]?.value as? String,
+                    expiresIn: error.details?["expires_in"]?.value as? Int,
+                    allowedMethods: (error.details?["allowed_methods"]?.value as? [Any])?.compactMap { $0 as? String } ?? []
                 )
                 await app?.authState.transition(to: .mfaSetupRequired(req))
             } else {

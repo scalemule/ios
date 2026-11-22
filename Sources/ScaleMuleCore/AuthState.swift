@@ -93,14 +93,35 @@ public struct MFAChallenge: Sendable, Equatable, Codable {
 public struct MFASetupRequirement: Sendable, Equatable, Codable {
     public let message: String
     public let requirementSource: String
+    /// Short-lived token (about 10 minutes) that can only set up two-step
+    /// sign-in and then finish this sign-in. Nil from older servers.
+    public let setupToken: String?
+    public let expiresIn: Int?
+    /// Methods the app allows: "totp" (authenticator app) and/or "email".
+    public let allowedMethods: [String]
 
-    public init(message: String, requirementSource: String) {
+    public init(message: String, requirementSource: String, setupToken: String? = nil, expiresIn: Int? = nil, allowedMethods: [String] = []) {
         self.message = message
         self.requirementSource = requirementSource
+        self.setupToken = setupToken
+        self.expiresIn = expiresIn
+        self.allowedMethods = allowedMethods
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        message = try c.decode(String.self, forKey: .message)
+        requirementSource = try c.decode(String.self, forKey: .requirementSource)
+        setupToken = try c.decodeIfPresent(String.self, forKey: .setupToken)
+        expiresIn = try c.decodeIfPresent(Int.self, forKey: .expiresIn)
+        allowedMethods = try c.decodeIfPresent([String].self, forKey: .allowedMethods) ?? []
     }
 
     private enum CodingKeys: String, CodingKey {
         case message
         case requirementSource = "requirement_source"
+        case setupToken = "setup_token"
+        case expiresIn = "expires_in"
+        case allowedMethods = "allowed_methods"
     }
 }
