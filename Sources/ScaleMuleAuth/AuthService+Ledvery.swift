@@ -41,6 +41,13 @@ public struct LedveryLinkChallenge: Sendable, Equatable {
     public let expiresAt: String?
     /// Proofs the server accepts, for example `["password"]`.
     public let methods: [String]
+
+    public init(challengeId: String, emailHint: String, expiresAt: String? = nil, methods: [String] = ["password"]) {
+        self.challengeId = challengeId
+        self.emailHint = emailHint
+        self.expiresAt = expiresAt
+        self.methods = methods
+    }
 }
 
 /// The existing account's email is not confirmed yet, so the server emailed a

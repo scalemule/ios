@@ -33,6 +33,7 @@ Or in Xcode: File > Add Package Dependencies > enter `https://github.com/scalemu
 | `ScaleMuleWorkspaces` | Workspace CRUD, members, invitations, SSO |
 | `ScaleMuleSocial` | Posts, the app feed, likes |
 | `ScaleMulePhotos` | Photo upload (checked for unsafe content) and sized images |
+| `ScaleMuleSafety` | Versioned consent (Terms, Privacy, licences), reporting content, blocking people, support messages |
 
 ## Quick Start
 
