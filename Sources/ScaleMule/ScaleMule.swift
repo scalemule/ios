@@ -2,3 +2,5 @@
 @_exported import ScaleMuleAuth
 @_exported import ScaleMulePermissions
 @_exported import ScaleMuleWorkspaces
+@_exported import ScaleMuleSocial
+@_exported import ScaleMulePhotos

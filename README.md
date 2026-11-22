@@ -31,6 +31,8 @@ Or in Xcode: File > Add Package Dependencies > enter `https://github.com/scalemu
 | `ScaleMuleAuth` | Authentication (register, login, MFA, OAuth, sessions, devices) |
 | `ScaleMulePermissions` | Roles, permission checks, policies |
 | `ScaleMuleWorkspaces` | Workspace CRUD, members, invitations, SSO |
+| `ScaleMuleSocial` | Posts, the app feed, likes |
+| `ScaleMulePhotos` | Photo upload (checked for unsafe content) and sized images |
 
 ## Quick Start
 
@@ -104,6 +106,34 @@ case .failure(let error):
 The sheet shares Safari's cookies, so someone already signed in to Ledvery on
 another ScaleMule site continues in one tap. `startLedverySignIn` and
 `completeLedverySignIn` are available for apps that present the web page themselves.
+
+## Photo feed (Social + Photos)
+
+A photo feed is a Social post whose `mediaIds` hold Photos ids. Every app
+gets the same feed rules from the server: everyone's `public` posts newest
+first, your own posts, and posts by accounts ScaleMule marks as spam or abuse
+visible only to their author.
+
+```swift
+let photos = PhotosService(app: app)
+let social = SocialService(app: app)
+
+// Post
+let photo = await photos.upload(jpegData, filename: "now.jpg")
+if case .success(let info) = photo {
+    _ = await social.createPost(content: "Ocean Beach", mediaIds: [info.id],
+                                metadata: ["width": info.width, "height": info.height])
+}
+
+// Read
+if case .success(let posts) = await social.feed(page: 1, perPage: 20) {
+    for post in posts {
+        // Fails with rawCode PhotosService.scanPendingCode for a few seconds
+        // while a new photo is checked; then returns the image bytes.
+        let image = await photos.image(id: post.mediaIds?.first ?? "", width: 1080)
+    }
+}
+```
 
 ## Auth Credential Model
 
