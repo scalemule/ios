@@ -77,6 +77,9 @@ struct BackendErrorDetail: Decodable {
     let code: String?
     let message: String?
     let field: String?
+    /// Extra structured fields some errors carry (for example the
+    /// `MFA_SETUP_REQUIRED` setup token).
+    let details: [String: AnyCodable]?
 }
 
 struct BackendMeta: Decodable {

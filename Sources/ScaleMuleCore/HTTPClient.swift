@@ -180,7 +180,9 @@ public actor HTTPClient {
                     return .failure(ApiError(
                         code: .mfaSetupRequired,
                         message: errDetail.message ?? "MFA setup required",
-                        statusCode: 403
+                        statusCode: 403,
+                        details: errDetail.details,
+                        rawCode: "MFA_SETUP_REQUIRED"
                     ))
                 }
             }
