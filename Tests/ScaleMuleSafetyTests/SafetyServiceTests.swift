@@ -109,4 +109,20 @@ final class SafetyServiceTests: XCTestCase {
         let error = assertApiFailure(await support.send(title: "Help", message: "x"))
         XCTAssertEqual(error?.rawCode, "FEEDBACK_DISABLED")
     }
+
+    func testListBlocks() async {
+        let blocks = BlockService(app: await signedIn())
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.url?.path, "/v1/social-policy/blocks")
+            let items = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems ?? []
+            XCTAssertEqual(items.first { $0.name == "per_page" }?.value, "100")
+            return TestFixtures.envelopedResponse(json: """
+            {"blocks":[{"blocked_identity_id":"them","scope":"global_app","created_at":"2026-11-22T04:00:00Z"}],"page":1,"per_page":100,"has_more":false}
+            """)
+        }
+        let list = assertApiSuccess(await blocks.list(perPage: 500))
+        XCTAssertEqual(list?.blocks.map(\.id), ["them"])
+        XCTAssertEqual(list?.hasMore, false)
+    }
 }
