@@ -4,3 +4,4 @@
 @_exported import ScaleMuleWorkspaces
 @_exported import ScaleMuleSocial
 @_exported import ScaleMulePhotos
+@_exported import ScaleMuleSafety
