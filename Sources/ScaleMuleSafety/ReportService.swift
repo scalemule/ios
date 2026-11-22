@@ -33,9 +33,12 @@ public struct ContentReport: Sendable, Decodable, Identifiable, Equatable {
     }
 }
 
-/// Report content to ScaleMule moderation (`/v1/flagcontent`). Reviewers
-/// hide or remove it in the owning service; nothing is hidden automatically,
-/// so apps should hide reported content for the reporter themselves.
+/// Report content to ScaleMule moderation (`/v1/flagcontent`). The reporter
+/// is always the signed-in person (signed out, only anonymous reports are
+/// accepted). Reviewers hide or remove content in the owning service; an app
+/// can also have content hidden automatically after a number of different
+/// people report it (a per-app setting, off by default). Apps should still
+/// hide reported content for the reporter straight away.
 public final class ReportService: ServiceModule, @unchecked Sendable {
     public let client: HTTPClient
 
@@ -61,7 +64,8 @@ public final class ReportService: ServiceModule, @unchecked Sendable {
             "category": category.rawValue,
             "is_anonymous": false,
         ]
-        // The server takes the reporter from the body, not the session.
+        // The server uses the session's person; a matching id is accepted for
+        // older servers that read it from the body.
         if let reporterId { body["reporter_id"] = reporterId }
         if let description, !description.isEmpty { body["description"] = description }
         if let contentURL { body["content_url"] = contentURL }
