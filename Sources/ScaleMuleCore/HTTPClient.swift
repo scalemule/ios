@@ -52,6 +52,12 @@ public actor HTTPClient {
         await executeWithRetry(options, as: EmptyResponse.self)
     }
 
+    /// Returns the raw response body (for example image bytes) on success.
+    /// Errors are parsed from the JSON error envelope as usual.
+    public func requestData(_ options: RequestOptions) async -> ApiResponse<Data> {
+        await executeWithRetry(options, as: Data.self)
+    }
+
     // MARK: - Request Execution
 
     private func executeWithRetry<T: Decodable & Sendable>(
@@ -61,7 +67,8 @@ public actor HTTPClient {
         var lastError: ApiError?
         var idempotencyKey: String?
 
-        for attempt in 0...config.maxRetries {
+        let maxRetries = options.retryable ? config.maxRetries : 0
+        for attempt in 0...max(config.maxRetries, 0) {
             // Rate limit check
             if Date() < rateLimitedUntil {
                 let waitTime = rateLimitedUntil.timeIntervalSinceNow
@@ -101,7 +108,7 @@ public actor HTTPClient {
                 } else {
                     lastError = .network(urlError.localizedDescription)
                 }
-                if attempt < config.maxRetries {
+                if attempt < maxRetries {
                     await backoff(attempt: attempt)
                     continue
                 }
@@ -122,6 +129,9 @@ public actor HTTPClient {
 
             // 2xx success
             if (200..<300).contains(statusCode) {
+                if type == Data.self {
+                    return .success(data as! T)
+                }
                 // 204 No Content
                 if statusCode == 204 || data.isEmpty {
                     if type == EmptyResponse.self {
@@ -182,7 +192,7 @@ public actor HTTPClient {
                     rateLimitedUntil = Date().addingTimeInterval(seconds)
                 }
                 lastError = ApiError(code: .rateLimited, message: "Rate limited", statusCode: 429)
-                if attempt < config.maxRetries {
+                if attempt < maxRetries {
                     await backoff(attempt: attempt)
                     continue
                 }
@@ -192,7 +202,7 @@ public actor HTTPClient {
             // Retryable server errors
             if [408, 500, 502, 503, 504].contains(statusCode) {
                 lastError = parseError(data: data, statusCode: statusCode)
-                if attempt < config.maxRetries {
+                if attempt < maxRetries {
                     await backoff(attempt: attempt)
                     continue
                 }
@@ -271,7 +281,7 @@ public actor HTTPClient {
         request.httpMethod = options.method.rawValue
         request.setValue(config.apiKey, forHTTPHeaderField: "x-api-key")
         request.setValue("ScaleMule-SDK-Swift/\(Self.sdkVersion)", forHTTPHeaderField: "User-Agent")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(options.accept ?? "application/json", forHTTPHeaderField: "Accept")
 
         // Workspace header
         if let workspaceId = await workspaceContext.workspaceId {
@@ -308,7 +318,10 @@ public actor HTTPClient {
         }
 
         // Body
-        if let body = options.body {
+        if let rawBody = options.rawBody {
+            request.setValue(options.contentType ?? "application/octet-stream", forHTTPHeaderField: "Content-Type")
+            request.httpBody = rawBody
+        } else if let body = options.body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
         }
