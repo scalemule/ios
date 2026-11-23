@@ -24,6 +24,9 @@ public struct RequestOptions: @unchecked Sendable {
     /// False for requests that must not be sent twice after a network error,
     /// timeout or server error (an upload creates a new record every time).
     public let retryable: Bool
+    /// Extra request headers (for example `X-Upload-Session-Id`, which ties
+    /// the server's logs to one upload).
+    public let headers: [String: String]
 
     public init(
         method: HTTPMethod,
@@ -35,7 +38,8 @@ public struct RequestOptions: @unchecked Sendable {
         rawBody: Data? = nil,
         contentType: String? = nil,
         accept: String? = nil,
-        retryable: Bool = true
+        retryable: Bool = true,
+        headers: [String: String] = [:]
     ) {
         self.method = method
         self.path = path
@@ -47,6 +51,7 @@ public struct RequestOptions: @unchecked Sendable {
         self.contentType = contentType
         self.accept = accept
         self.retryable = retryable
+        self.headers = headers
     }
 }
 

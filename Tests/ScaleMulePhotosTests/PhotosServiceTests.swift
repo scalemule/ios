@@ -2,6 +2,7 @@ import XCTest
 import ScaleMuleTestHelpers
 @testable import ScaleMuleCore
 @testable import ScaleMulePhotos
+@testable import ScaleMuleStorage
 
 final class PhotosServiceTests: XCTestCase {
     static let photoJSON = """
@@ -19,9 +20,16 @@ final class PhotosServiceTests: XCTestCase {
     """
 
     private func signedIn() async -> PhotosService {
-        let (app, _) = createTestClient()
+        let (app, session) = createTestClient()
         try? await app.sessionManager.setCredentials(CredentialSet(sessionToken: "sess_123", sessionExpiresAt: Date().addingTimeInterval(3600)))
-        return PhotosService(app: app)
+        let storage = StorageService(
+            client: app.client,
+            conditions: NetworkConditions(fixed: NetworkSnapshot(interface: .wifi, isExpensive: false, isConstrained: false, measuredUplinkMbps: nil)),
+            s3Session: session,
+            resumeDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("sm-photos-\(UUID().uuidString)"),
+            retryDelays: [0, 0, 0]
+        )
+        return PhotosService(client: app.client, storage: storage)
     }
 
     private func body(_ request: URLRequest) -> Data {
@@ -39,29 +47,38 @@ final class PhotosServiceTests: XCTestCase {
         return data
     }
 
-    func testUploadSendsMultipartFile() async {
+    func testUploadGoesThroughStorageThenRegisters() async {
         let photos = await signedIn()
-        let jpeg = Data([0xFF, 0xD8, 0xFF, 0xE0, 0x01, 0x02])
+        var registerCalls = 0
         MockURLProtocol.requestHandler = { request in
-            XCTAssertEqual(request.httpMethod, "POST")
-            XCTAssertEqual(request.url?.path, "/v1/photos/upload")
+            let url = request.url!
+            if url.host == "s3.test" {
+                XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+                return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data())
+            }
             XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer sess_123")
-            XCTAssertEqual(request.value(forHTTPHeaderField: "x-api-key"), "pk_test_abc123")
-            let contentType = request.value(forHTTPHeaderField: "Content-Type") ?? ""
-            XCTAssertTrue(contentType.hasPrefix("multipart/form-data; boundary="))
-            let boundary = String(contentType.dropFirst("multipart/form-data; boundary=".count))
-            let sent = self.body(request)
-            let text = String(decoding: sent, as: UTF8.self)
-            XCTAssertTrue(text.contains("Content-Disposition: form-data; name=\"file\"; filename=\"shot.jpg\""))
-            XCTAssertTrue(text.contains("Content-Type: image/jpeg"))
-            XCTAssertNotNil(sent.range(of: jpeg))
-            XCTAssertTrue(text.hasSuffix("--\(boundary)--\r\n"))
-            return TestFixtures.mockResponse(statusCode: 201, json: "{\"success\": true, \"data\": \(Self.photoJSON)}")
+            switch url.path {
+            case "/v1/storage/signed-url/upload":
+                return TestFixtures.mockResponse(statusCode: 200, json: #"{"success":true,"data":{"file_id":"file-1","upload_url":"https://s3.test/x","completion_token":"t"}}"#)
+            case "/v1/storage/signed-url/complete":
+                return TestFixtures.mockResponse(statusCode: 200, json: #"{"success":true,"data":{"file_id":"file-1","filename":"shot.jpg","size_bytes":6,"content_type":"image/jpeg"}}"#)
+            case "/v1/photos/register":
+                registerCalls += 1
+                XCTAssertEqual(self.bodyJSON(request)?["file_id"] as? String, "file-1")
+                if registerCalls == 1 {
+                    // Safety scan still running.
+                    return TestFixtures.mockResponse(statusCode: 202, json: #"{"success":true,"data":{"status":"pending_scan"}}"#)
+                }
+                return TestFixtures.mockResponse(statusCode: 201, json: "{\"success\": true, \"data\": \(Self.photoJSON)}")
+            default:
+                return TestFixtures.mockResponse(statusCode: 200, json: #"{"success":true,"data":{}}"#)
+            }
         }
 
-        let photo = assertApiSuccess(await photos.upload(jpeg, filename: "shot.jpg"))
+        let photo = assertApiSuccess(await photos.upload(Data([0xFF, 0xD8, 0xFF, 0xE0, 0x01, 0x02]), filename: "shot.jpg"))
         XCTAssertEqual(photo?.id, "019b0000-0000-7000-8000-0000000000ff")
         XCTAssertEqual(photo?.width, 1080)
+        XCTAssertEqual(registerCalls, 2, "pending_scan is asked again")
     }
 
     func testImageReturnsRawBytesAndSendsSize() async {
