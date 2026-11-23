@@ -274,6 +274,8 @@ public final class CaptureController: NSObject, ObservableObject {
         let mirrored = currentCameraPosition == .front
         let remaining = maxVideoSeconds - clipsDuration
         let base = clipsDuration
+        // A release from now on, even before the camera starts, ends this clip.
+        sessionQueue.async { [weak self] in self?.stopRequested = false }
         Task {
             let withAudio = await Self.microphoneAllowed()
             sessionQueue.async { [weak self] in
@@ -313,8 +315,11 @@ public final class CaptureController: NSObject, ObservableObject {
         if clips.isEmpty { takeRotation = nil }
     }
 
-    /// Hands the clips over (the caller owns the files) and leaves video mode.
+    /// Hands the clips over (the caller owns the files) and leaves video
+    /// mode. Empty while a clip is still being recorded or written: call it
+    /// when `isRecording` is false.
     public func finishTake() -> [URL] {
+        guard !isRecording else { return [] }
         let urls = clips.map(\.url)
         resetTake()
         return urls
@@ -322,6 +327,7 @@ public final class CaptureController: NSObject, ObservableObject {
 
     /// Throws the take away.
     public func discardTake() {
+        guard !isRecording else { return }
         for clip in clips { try? FileManager.default.removeItem(at: clip.url) }
         resetTake()
     }
@@ -334,6 +340,17 @@ public final class CaptureController: NSObject, ObservableObject {
     }
 
     nonisolated private func beginClip(audio: Bool, angle: CGFloat?, mirrored: Bool, maxSeconds: Double) {
+        // Released while the microphone question was up: no clip.
+        if stopRequested {
+            stopRequested = false
+            Task { @MainActor in
+                self.recordingTimer?.cancel()
+                self.isRecording = false
+                self.recordedSeconds = self.clipsDuration
+                if self.clips.isEmpty { self.takeRotation = nil }
+            }
+            return
+        }
         if !inMovieMode {
             session.beginConfiguration()
             if session.canSetSessionPreset(.high) { session.sessionPreset = .high }
@@ -356,7 +373,6 @@ public final class CaptureController: NSObject, ObservableObject {
             if connection.isVideoStabilizationSupported { connection.preferredVideoStabilizationMode = .auto }
         }
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("clip-\(UUID().uuidString).mov")
-        stopRequested = false
         movieOutput.startRecording(to: url, recordingDelegate: self)
     }
 
@@ -376,8 +392,14 @@ public final class CaptureController: NSObject, ObservableObject {
 
     // MARK: - Camera switching
 
+    /// Flipping between clips keeps the take upright only when the phone is
+    /// held upright (sideways, the two cameras need different angles).
+    public var canSwitchCamera: Bool {
+        !isRecording && (clips.isEmpty || takeRotation == nil || takeRotation == 90)
+    }
+
     public func switchCamera() {
-        guard !isRecording else { return }
+        guard canSwitchCamera else { return }
         let newPosition: AVCaptureDevice.Position = currentCameraPosition == .back ? .front : .back
         sessionQueue.async { [weak self] in
             guard let self, self.isConfigured, let newCamera = Self.camera(for: newPosition),

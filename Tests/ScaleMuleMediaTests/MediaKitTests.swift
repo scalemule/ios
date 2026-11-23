@@ -10,8 +10,8 @@ import ScaleMuleTestHelpers
 @testable import ScaleMuleMediaQueue
 
 /// Copies of the fixture clips (the queue takes files over).
-private func clip(_ seconds: Int) throws -> URL {
-    let source = try XCTUnwrap(Bundle.module.url(forResource: "portrait-\(seconds)", withExtension: "mov", subdirectory: "Fixtures"))
+private func clip(_ seconds: Int, name: String = "portrait") throws -> URL {
+    let source = try XCTUnwrap(Bundle.module.url(forResource: "\(name)-\(seconds)", withExtension: "mov", subdirectory: "Fixtures"))
     let copy = FileManager.default.temporaryDirectory.appendingPathComponent("fixture-\(UUID().uuidString).mov")
     try FileManager.default.copyItem(at: source, to: copy)
     return copy
@@ -52,6 +52,15 @@ final class VideoComposerTests: XCTestCase {
             spread = max(spread, Int(max(pixels[i], pixels[i + 1], pixels[i + 2])) - Int(min(pixels[i], pixels[i + 1], pixels[i + 2])))
         }
         XCTAssertLessThan(spread, 12, "noir frames are grey")
+    }
+
+    func testClipsWhoseSoundRunsLongerJoinWithoutGaps() async throws {
+        // 1.0 s of picture with 1.4 s of sound, then 1 s: 2.0 s, not 2.4.
+        let clips = [try clip(1, name: "longsound"), try clip(1)]
+        let joined = try await VideoComposer.duration(of: clips)
+        XCTAssertEqual(joined, 2.0, accuracy: 0.08)
+        let prepared = try await VideoComposer.export(VideoEdit(clips: clips))
+        XCTAssertEqual(prepared.duration, 2.0, accuracy: 0.12)
     }
 
     func testTrimIsClampedAndLimited() throws {
@@ -99,11 +108,12 @@ final class MediaUploadQueueTests: XCTestCase {
     private final class Server: @unchecked Sendable {
         let lock = NSLock()
         var paths: [String] = []
+        var deletes = 0
         func record(_ path: String) { lock.lock(); paths.append(path); lock.unlock() }
         func count(_ path: String) -> Int { lock.lock(); defer { lock.unlock() }; return paths.filter { $0 == path }.count }
     }
 
-    private func services(_ server: Server) async -> (PhotosService, VideosService) {
+    private func services(_ server: Server, registerDelay: TimeInterval = 0) async -> (PhotosService, VideosService) {
         let (app, session) = createTestClient()
         try? await app.sessionManager.setCredentials(CredentialSet(sessionToken: "sess", sessionExpiresAt: Date().addingTimeInterval(3600)))
         let storage = StorageService(
@@ -116,6 +126,7 @@ final class MediaUploadQueueTests: XCTestCase {
         MockURLProtocol.requestHandler = { request in
             let url = request.url!
             server.record(url.host == "s3.test" ? "s3" : url.path)
+            if request.httpMethod == "DELETE" { server.lock.lock(); server.deletes += 1; server.lock.unlock() }
             if url.host == "s3.test" { return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: ["ETag": "\"e\""])!, Data()) }
             let json: String
             switch url.path {
@@ -124,6 +135,7 @@ final class MediaUploadQueueTests: XCTestCase {
             case "/v1/storage/signed-url/complete":
                 json = #"{"success":true,"data":{"file_id":"f1","filename":"x","size_bytes":1,"content_type":"image/jpeg","visibility":"private"}}"#
             case "/v1/photos/register":
+                if registerDelay > 0 { Thread.sleep(forTimeInterval: registerDelay) }
                 json = #"{"success":true,"data":{"id":"photo-1","filename":"x.jpg","mime_type":"image/jpeg","file_size":1,"width":4032,"height":3024,"created_at":"2026-11-22T00:00:00Z"}}"#
             case "/v1/videos/register":
                 json = #"{"video_id":"video-1","file_id":"f1","status":"registering"}"#
@@ -170,6 +182,27 @@ final class MediaUploadQueueTests: XCTestCase {
         XCTAssertEqual(published.first?.mediaId, "photo-1")
         XCTAssertEqual(published.first?.attributes["caption"], "Ocean Beach 🌊")
         XCTAssertEqual(server.count("/v1/photos/register"), 1, "publishing again reuses the uploaded photo")
+    }
+
+    @MainActor
+    func testDiscardingDuringUploadPublishesNothingAndLeavesNothing() async throws {
+        let server = Server()
+        let (photos, videos) = await services(server, registerDelay: 0.8)
+        let folder = "queue-\(UUID().uuidString)"
+        var published = 0
+        let queue = MediaUploadQueue(photos: photos, videos: videos, folderName: folder) { _ in
+            published += 1
+            return .success(())
+        }
+        queue.post(photo: UIImage(systemName: "star.fill")!, attributes: [:])
+        await waitFor { server.count("/v1/photos/register") > 0 || server.count("s3") > 0 }
+        queue.discard(try XCTUnwrap(queue.jobs.first?.id))
+        try await Task.sleep(nanoseconds: 2_000_000_000)
+        XCTAssertEqual(published, 0, "a discarded post is never published")
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(folder)
+        let left = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        XCTAssertTrue(left.isEmpty, "nothing left to come back after a relaunch: \(left)")
+        XCTAssertGreaterThan(server.deletes, 0, "the photo uploaded meanwhile is deleted")
     }
 
     @MainActor

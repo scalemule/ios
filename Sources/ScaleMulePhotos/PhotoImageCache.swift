@@ -13,8 +13,10 @@ public final class PhotoImageCache {
     private let memory = NSCache<NSString, UIImage>()
     private let folder: URL
 
-    public init(folderName: String = "scalemule-photos", memoryCount: Int = 60, filesKept: Int = 150) {
-        memory.countLimit = memoryCount
+    /// `memoryBytes` bounds the decoded pictures kept in memory (default
+    /// about 150 MB: some 30 screen-sized photos).
+    public init(folderName: String = "scalemule-photos", memoryBytes: Int = 150 * 1024 * 1024, filesKept: Int = 150) {
+        memory.totalCostLimit = memoryBytes
         folder = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent(folderName, isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -36,13 +38,13 @@ public final class PhotoImageCache {
             guard let data = try? Data(contentsOf: url) else { return nil }
             return UIImage(data: data)?.preparingForDisplay()
         }.value
-        if let image { memory.setObject(image, forKey: key as NSString) }
+        if let image { memory.setObject(image, forKey: key as NSString, cost: Self.cost(image)) }
         return image
     }
 
     /// A picture made on this phone (for example your own new post).
     public func store(_ image: UIImage, for key: String) {
-        memory.setObject(image, forKey: key as NSString)
+        memory.setObject(image, forKey: key as NSString, cost: Self.cost(image))
         let url = fileURL(for: key)
         Task.detached(priority: .utility) {
             try? image.jpegData(compressionQuality: 0.85)?.write(to: url, options: .atomic)
@@ -51,9 +53,13 @@ public final class PhotoImageCache {
 
     /// A picture as the server sent it.
     public func store(_ image: UIImage, data: Data, for key: String) {
-        memory.setObject(image, forKey: key as NSString)
+        memory.setObject(image, forKey: key as NSString, cost: Self.cost(image))
         let url = fileURL(for: key)
         Task.detached(priority: .utility) { try? data.write(to: url, options: .atomic) }
+    }
+
+    nonisolated private static func cost(_ image: UIImage) -> Int {
+        Int(image.size.width * image.scale * image.size.height * image.scale * 4)
     }
 
     private func fileURL(for key: String) -> URL {
@@ -92,7 +98,12 @@ extension PhotosService {
         onState: (@MainActor @Sendable (LoadState) -> Void)? = nil
     ) async -> ApiResponse<UIImage> {
         let key = PhotoImageCache.key(for: id)
-        if let cache, let saved = await cache.saved(for: key) { return .success(saved) }
+        // One picture per photo: a cached one smaller than asked for (a
+        // thumbnail) is fetched again at this size and replaces it.
+        if let cache, let saved = await cache.saved(for: key) {
+            let side = max(saved.size.width * saved.scale, saved.size.height * saved.scale)
+            if side >= CGFloat(width) * 0.9 { return .success(saved) }
+        }
         var last = ApiError(code: .networkError, message: "The photo didn't load")
         for attempt in 0..<10 {
             if Task.isCancelled { return .failure(last) }

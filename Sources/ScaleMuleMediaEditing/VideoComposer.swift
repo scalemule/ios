@@ -58,7 +58,10 @@ public enum VideoComposer {
     public static func duration(of clips: [URL]) async throws -> Double {
         var total = 0.0
         for clip in clips {
-            total += try await AVURLAsset(url: clip).load(.duration).seconds
+            // The picture's length (what joining uses).
+            if let track = try await AVURLAsset(url: clip).loadTracks(withMediaType: .video).first {
+                total += try await track.load(.timeRange).duration.seconds
+            }
         }
         return total
     }
@@ -150,14 +153,21 @@ public enum VideoComposer {
         for clip in edit.clips {
             let asset = AVURLAsset(url: clip)
             guard let source = try await asset.loadTracks(withMediaType: .video).first else { throw VideoComposerError.unreadable }
-            let duration = try await asset.load(.duration)
-            let range = CMTimeRange(start: .zero, duration: duration)
+            // The picture's own range: a clip whose sound runs longer would
+            // otherwise leave a frozen gap at the join.
+            let range = try await source.load(.timeRange)
+            guard range.duration.seconds > 0 else { continue }
             try video.insertTimeRange(range, of: source, at: cursor)
             if transform == nil { transform = try await source.load(.preferredTransform) }
             if let audio, let sound = try await asset.loadTracks(withMediaType: .audio).first {
-                try audio.insertTimeRange(range, of: sound, at: cursor)
+                let soundRange = try await sound.load(.timeRange)
+                let start = CMTimeMaximum(soundRange.start, range.start)
+                let end = CMTimeMinimum(soundRange.end, range.end)
+                if end > start {
+                    try audio.insertTimeRange(CMTimeRange(start: start, end: end), of: sound, at: cursor + (start - range.start))
+                }
             }
-            cursor = cursor + duration
+            cursor = cursor + range.duration
         }
         video.preferredTransform = transform ?? .identity
         if let audio, audio.segments.isEmpty { composition.removeTrack(audio) }

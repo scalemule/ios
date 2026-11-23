@@ -38,6 +38,10 @@ public struct MediaUpload: Sendable {
 /// edited (`VideoComposer`) once, then uploaded to ScaleMule Video.
 ///
 /// The app supplies `publish` (for example a Social post) and observes `jobs`.
+///
+/// `publish` runs at least once per post: after a crash between publishing
+/// and cleaning up, or a publish that succeeded but timed out, it can run
+/// again for the same `MediaUpload.id`; make it idempotent on that id.
 @MainActor
 public final class MediaUploadQueue: ObservableObject {
     public struct Job: Identifiable {
@@ -99,7 +103,10 @@ public final class MediaUploadQueue: ObservableObject {
     private var restored = false
     private var localPreviews: [UUID: UIImage] = [:]
     private var sendingOriginals = false
+    /// Given up on: running steps stop at their next check and leave nothing behind.
+    private var discarded: Set<UUID> = []
     private let monitor = NWPathMonitor()
+    private var activeObserver: NSObjectProtocol?
 
     public init(
         photos: PhotosService,
@@ -125,10 +132,17 @@ public final class MediaUploadQueue: ObservableObject {
             Task { @MainActor in self?.sendWaitingOriginals() }
         }
         monitor.start(queue: DispatchQueue(label: "com.scalemule.media-queue.path"))
-        NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+        activeObserver = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.sendWaitingOriginals() }
         }
     }
+
+    deinit {
+        monitor.cancel()
+        if let activeObserver { NotificationCenter.default.removeObserver(activeObserver) }
+    }
+
+    private func isDiscarded(_ id: UUID) -> Bool { discarded.contains(id) }
 
     // MARK: - Posting
 
@@ -148,6 +162,10 @@ public final class MediaUploadQueue: ObservableObject {
                 } catch { return nil }
                 return Self.resized(image, maxSide: side)
             }.value
+            if isDiscarded(id) {
+                removeFiles(record)
+                return
+            }
             guard let preview else {
                 setState(.failed("Could not prepare the photo."), for: id)
                 return
@@ -162,21 +180,21 @@ public final class MediaUploadQueue: ObservableObject {
         let id = UUID()
         var record = Record(id: id, kind: .video, attributes: attributes, createdAt: Date(), filename: "video-\(Int(Date().timeIntervalSince1970)).mp4")
         jobs.insert(Job(id: id, kind: .video, thumbnail: Self.placeholder, attributes: attributes, record: record), at: 0)
+        var kept = edit
+        kept.clips = []
+        record.edit = kept
+        record.clipNames = []
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            var names: [String] = []
             for (index, clip) in edit.clips.enumerated() {
                 let name = "\(id.uuidString).clip\(index).\(clip.pathExtension.isEmpty ? "mov" : clip.pathExtension)"
                 try FileManager.default.moveItem(at: clip, to: folder.appendingPathComponent(name))
-                names.append(name)
+                record.clipNames?.append(name)
             }
-            record.clipNames = names
-            var kept = edit
-            kept.clips = []
-            record.edit = kept
-            try Self.writeRecord(record, in: folder)
             update(record)
         } catch {
+            // Whatever was moved stays listed, so Discard removes it.
+            update(record)
             setState(.failed("Could not keep the video on this phone."), for: id)
             return
         }
@@ -187,15 +205,23 @@ public final class MediaUploadQueue: ObservableObject {
     public func restore() {
         guard !restored else { return }
         restored = true
-        for record in savedRecords() where record.published != true && !jobs.contains(where: { $0.id == record.id }) {
-            let image = (try? Data(contentsOf: jpegURL(record.id))).flatMap(UIImage.init(data:))
-            if image == nil && record.kind == .photo { continue }
-            jobs.append(Job(id: record.id, kind: record.kind, thumbnail: image.map { Self.resized($0, maxSide: 160) } ?? Self.placeholder,
-                            attributes: record.attributes, record: record))
-            if let image { localPreviews[record.id] = Self.resized(image, maxSide: previewMaxSide) }
-            run(record.id)
+        let records = savedRecords().filter { $0.published != true }
+        let folder = folder, side = previewMaxSide
+        Task {
+            for record in records where !jobs.contains(where: { $0.id == record.id }) {
+                let url = folder.appendingPathComponent("\(record.id.uuidString).jpg")
+                let images = await Task.detached(priority: .utility) { () -> (UIImage, UIImage)? in
+                    guard let image = (try? Data(contentsOf: url)).flatMap(UIImage.init(data:)) else { return nil }
+                    return (Self.resized(image, maxSide: 160), Self.resized(image, maxSide: side))
+                }.value
+                if images == nil && record.kind == .photo { continue }
+                jobs.append(Job(id: record.id, kind: record.kind, thumbnail: images?.0 ?? Self.placeholder,
+                                attributes: record.attributes, record: record))
+                if let images { localPreviews[record.id] = images.1 }
+                run(record.id)
+            }
+            sendWaitingOriginals()
         }
-        sendWaitingOriginals()
     }
 
     public func retry(_ id: UUID) {
@@ -208,6 +234,7 @@ public final class MediaUploadQueue: ObservableObject {
     /// Give up on a post; an uploaded photo nobody will see is deleted.
     public func discard(_ id: UUID) {
         guard let job = jobs.first(where: { $0.id == id }) else { return }
+        discarded.insert(id)
         jobs.removeAll { $0.id == id }
         localPreviews[id] = nil
         removeFiles(job.record)
@@ -230,6 +257,10 @@ public final class MediaUploadQueue: ObservableObject {
             }
             var record = job.record
             let uploaded = record.kind == .video ? await uploadVideo(&record) : await uploadPhoto(&record)
+            if isDiscarded(id) {
+                abandon(record)
+                return
+            }
             guard uploaded, let mediaId = record.mediaId else { return }
             let upload = MediaUpload(
                 id: id, kind: record.kind, mediaId: mediaId,
@@ -237,6 +268,9 @@ public final class MediaUploadQueue: ObservableObject {
                 duration: record.duration, attributes: record.attributes
             )
             switch await publish(upload) {
+            case .success where isDiscarded(id):
+                // Published as Discard was tapped: the post stands; tidy up.
+                removeFiles(record)
             case .success:
                 jobs.removeAll { $0.id == id }
                 localPreviews[id] = nil
@@ -341,7 +375,7 @@ public final class MediaUploadQueue: ObservableObject {
 
     /// Full-resolution originals of photos posted smaller on mobile data.
     public func sendWaitingOriginals() {
-        guard !sendingOriginals, photos.originalIsCheapToSend() else { return }
+        guard restored, !sendingOriginals, photos.originalIsCheapToSend() else { return }
         let waiting = savedRecords().filter { $0.published == true && $0.needsOriginal == true && $0.mediaId != nil }
         guard !waiting.isEmpty else { return }
         sendingOriginals = true
@@ -383,9 +417,20 @@ public final class MediaUploadQueue: ObservableObject {
         jobs[index].state = state
     }
 
+    /// Saves a post's progress; a discarded post is never written back.
     private func update(_ record: Record) {
+        guard !isDiscarded(record.id) else { return }
         if let index = jobs.firstIndex(where: { $0.id == record.id }) { jobs[index].record = record }
         try? Self.writeRecord(record, in: folder)
+    }
+
+    /// Discarded mid-upload: delete what was made, including an uploaded photo.
+    private func abandon(_ record: Record) {
+        removeFiles(record)
+        if record.kind == .photo, let mediaId = record.mediaId {
+            let photos = photos
+            Task { _ = await photos.delete(id: mediaId) }
+        }
     }
 
     private func savedRecords() -> [Record] {
