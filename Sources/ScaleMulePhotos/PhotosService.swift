@@ -17,6 +17,9 @@ public final class PhotosService: ServiceModule, @unchecked Sendable {
     public let client: HTTPClient
     /// The upload pipeline Photos uses.
     public let storage: StorageService
+    /// Waits between looks for a public size that is still being made
+    /// (`publicImageURL`), in nanoseconds: about 8 s in all.
+    var publicRenditionPollDelays: [UInt64] = [500, 500, 1000, 1000, 1000, 2000, 2000].map { UInt64($0) * 1_000_000 }
 
     /// Server code while a new photo is still being checked.
     public static let scanPendingCode = "SCAN_PENDING"
