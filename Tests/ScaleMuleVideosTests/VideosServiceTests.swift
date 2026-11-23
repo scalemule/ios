@@ -79,6 +79,38 @@ final class VideosServiceTests: XCTestCase {
     func testSoundOnIsHeardOnSilentAndMutedLeavesOtherAudio() {
         XCTAssertEqual(VideoPlaybackModel.audioCategory(muted: false), .playback)
         XCTAssertEqual(VideoPlaybackModel.audioCategory(muted: true), .ambient)
+        // play() itself must use it (a merge once put .ambient back there).
+        let (app, _) = createTestClient()
+        PlaybackAnalytics.isEnabled = false
+        defer { PlaybackAnalytics.isEnabled = true }
+        let model = VideoPlaybackModel(videoId: "v", videos: VideosService(app: app))
+        model.isMuted = false
+        model.play()
+        XCTAssertEqual(model.appliedAudioCategory, .playback)
+        model.stop()
+        model.isMuted = true
+        model.play()
+        XCTAssertEqual(model.appliedAudioCategory, .ambient)
+        model.stop()
+    }
+
+    func testTrackSendsTheDashboardFields() async {
+        let (app, _) = createTestClient()
+        try? await app.sessionManager.setCredentials(CredentialSet(sessionToken: "sess", sessionExpiresAt: Date().addingTimeInterval(3600)))
+        let videos = VideosService(app: app)
+        var body: [String: Any]?
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url?.path, "/v1/videos/v1/track")
+            body = self.bodyJSON(request)
+            return TestFixtures.mockResponse(statusCode: 202, json: #"{"success":true,"event_id":"e"}"#)
+        }
+        let event = PlaybackEvent(sessionId: "ios-1", type: .heartbeat, positionSeconds: 3.2, quality: "480p",
+                                  metadata: ["watched_seconds": AnyCodable(12.5), "watch_through_ratio": AnyCodable(1.0)])
+        _ = await videos.track(id: "v1", event: event)
+        XCTAssertEqual(body?["event_type"] as? String, "heartbeat")
+        XCTAssertEqual(body?["session_id"] as? String, "ios-1")
+        XCTAssertEqual(body?["quality"] as? String, "480p")
+        XCTAssertEqual((body?["metadata"] as? [String: Any])?["watched_seconds"] as? Double, 12.5)
     }
     #endif
 }

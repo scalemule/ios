@@ -439,6 +439,26 @@ let avatarURL = post.isMine ? user.avatarURL : await people.profile(post.authorI
 - ScaleMule Video has no delete yet: `deleteOwnPost` deletes a video post but
   not its video.
 
+## Usage analytics for photos and videos
+
+Every app built on the SDK reports how its media is used, with no extra code:
+
+- **Video** (`VideoPlaybackModel`, or `PlaybackAnalytics` for a custom
+  player): `play` at the first frame (time to first frame, starting
+  quality), `heartbeat` every 10 s, `buffer` after each stall, `complete` at
+  each loop, `pause` on pause or leaving, `error`. Running totals: watched
+  seconds, watch-through, rebuffer ratio, quality switches, dropped frames,
+  bandwidth and segment load time, connection type. They appear in the
+  ScaleMule dashboard's Video analytics (views, completions, watch time,
+  quality of experience). Turn off with `PlaybackAnalytics.isEnabled = false`.
+- **Posts and photos** (`SocialFeedModel`): call `setActivePost(id)` from
+  `FeedPager`'s active post. A post seen for a second counts one view in
+  ScaleMule Social (total and unique viewers per post); leaving it records
+  `feed.post_view` with how long it was on screen. `trackAction("open" |
+  "share" | "save", post)` records actions; `flushAnalytics()` when the app
+  goes to the background.
+- `AnalyticsEvents` sends any other product event to ScaleMule Analytics.
+
 ## Auth Credential Model
 
 ScaleMule uses a multi-credential system, not a single bearer token:

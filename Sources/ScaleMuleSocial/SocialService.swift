@@ -102,6 +102,22 @@ public final class SocialService: ServiceModule, @unchecked Sendable {
         ))
     }
 
+    // MARK: - Views
+
+    /// Count that the signed-in person saw a post (Social's view counter:
+    /// total views and unique viewers per post). Call once per post shown;
+    /// `MediaPosts.SocialFeedModel` does it after a post was on screen for a
+    /// second.
+    public func recordView(_ target: LikeTarget = .post, id: String) async -> ApiResponse<EmptyResponse> {
+        await client.requestVoid(RequestOptions(
+            method: .post,
+            path: "/v1/social/\(target.rawValue)/\(Self.segment(id))/views",
+            body: [:],
+            credential: .accessToken,
+            retryable: false
+        ))
+    }
+
     // MARK: - Private
 
     private func posts(path: String, page: Int, perPage: Int) async -> ApiResponse<[SocialPost]> {

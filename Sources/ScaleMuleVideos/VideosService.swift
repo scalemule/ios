@@ -92,6 +92,26 @@ public final class VideosService: ServiceModule, @unchecked Sendable {
         }
     }
 
+    /// Record a playback event for ScaleMule Video analytics
+    /// (`POST /v1/videos/{id}/track`). `VideoPlaybackModel` sends these by
+    /// itself; call it directly only for a custom player.
+    public func track(id: String, event: PlaybackEvent) async -> ApiResponse<EmptyResponse> {
+        var body: [String: Any] = [
+            "session_id": event.sessionId,
+            "event_type": event.type.rawValue,
+        ]
+        if let position = event.positionSeconds, position.isFinite { body["timestamp_seconds"] = max(0, position) }
+        if let quality = event.quality { body["quality"] = quality }
+        if !event.metadata.isEmpty { body["metadata"] = event.metadata.mapValues(\.value) }
+        return await client.requestVoid(RequestOptions(
+            method: .post,
+            path: "/v1/videos/\(Self.segment(id))/track",
+            body: body,
+            credential: .accessToken,
+            retryable: false
+        ))
+    }
+
     static func segment(_ value: String) -> String {
         value.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-_"))) ?? value
     }
