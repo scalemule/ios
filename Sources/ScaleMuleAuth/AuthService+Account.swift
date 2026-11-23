@@ -43,6 +43,7 @@ extension AuthService {
             credential: .sessionToken
         ))
         if case .success(let user) = result {
+            await app?.sessionManager.rememberUser(user)
             await app?.authState.transition(to: .authenticated(user))
         }
         return result
