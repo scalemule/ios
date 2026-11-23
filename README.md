@@ -41,6 +41,7 @@ Or in Xcode: File > Add Package Dependencies > enter `https://github.com/scalemu
 | `ScaleMuleLocation` | Location for posts and "around me": permission and real fixes, venue/city/nearest-city/exact choices (Apple Maps), a Nearby feed model |
 | `ScaleMuleFeed` | Full-screen paging feed with cell reuse (`FeedPager`), reports the posts coming next for preloading |
 | `ScaleMuleSafety` | Versioned consent (Terms, Privacy, licences), reporting content, blocking people, support messages |
+| `ScaleMuleProfiles` | Add, change or remove your profile photo; other people's names and photos, cached |
 
 ## Quick Start
 
@@ -144,6 +145,59 @@ if case .success(let posts) = await social.feed(page: 1, perPage: 20) {
     }
 }
 ```
+
+## Profile photos (Profiles)
+
+`ProfilePhotoService` adds, changes or removes the signed-in person's profile
+photo. The picture goes through Photos like any other (checked for unsafe
+content before anyone sees it) but is stored as a public photo, so the
+profile's `avatar_url` is a stable, unsigned link on ScaleMule's public CDN: a
+256 px square JPEG that any screen, page or person can show without a key, and
+that never expires.
+
+```swift
+let profilePhotos = ProfilePhotoService(app: app)
+
+// From the Photos picker or the camera
+switch await profilePhotos.setProfilePhoto(uiImage) { progress in print(progress.fraction) } {
+case .success(let user):
+    print(user.avatarURL!)  // https://cdn-public.scalemule.com/{app}/anonymous/photos/{photo}/w256_h256_cover_q85_jpeg.jpg (or .jpeg)
+case .failure(let error):
+    show(error.userFacingMessage)
+}
+
+_ = await profilePhotos.removeProfilePhoto()   // avatar_url becomes "", photo deleted
+```
+
+What `setProfilePhoto` does: makes the picture upright, at most 1024 px, with
+no metadata (no GPS, camera or time); uploads it with Storage visibility
+`anonymous_visible` and registers it with Photos; takes the link Photos records
+for the 256 px square (`GET /v1/photos/public/{id}/manifest?rendition=w256_h256_cover_q85_jpeg`,
+asking the public transform to make it if it is not there yet); sets
+`avatar_url` with `PATCH /v1/auth/profile`, which also updates the auth state;
+then deletes the previous profile photo it made. `setProfilePhoto(_ data:)`
+takes encoded bytes (JPEG, HEIC, PNG) and works on macOS too.
+`AuthUser.avatarURL` is the photo link or nil (Auth keeps `""` for a removed
+photo; only HTTPS links are returned).
+
+The lower-level pieces are on `PhotosService`: `uploadPublic` (a public photo),
+`publicRendition` and `publicImageURL(photoId:width:height:fit:format:quality:)`
+(the unsigned CDN link of one size).
+
+Other people's names and photos come from `PublicProfiles`, an actor that
+caches `GET /v1/auth/users/{id}` (a signed-in caller sees only the contact-free
+view of anyone else: no email or phone):
+
+```swift
+let people = PublicProfiles(app: app)              // keep one for the app
+if let author = await people.profile(post.userId) {
+    print(author.name ?? "", author.avatarURL as Any)
+}
+```
+
+Lookups are kept for 10 minutes, a person who could not be found for 1 minute,
+and concurrent lookups of one person share one request (`ttl`, `missTTL` and
+`capacity` can be set). `remember`, `forget` and `removeAll` update the cache.
 
 ## Uploads (Storage)
 

@@ -19,6 +19,7 @@ let package = Package(
         .library(name: "ScaleMuleMediaQueue", targets: ["ScaleMuleMediaQueue"]),
         .library(name: "ScaleMuleLocation", targets: ["ScaleMuleLocation"]),
         .library(name: "ScaleMuleFeed", targets: ["ScaleMuleFeed"]),
+        .library(name: "ScaleMuleProfiles", targets: ["ScaleMuleProfiles"]),
         .library(name: "ScaleMule", targets: ["ScaleMule"]),
     ],
     dependencies: [],
@@ -37,7 +38,8 @@ let package = Package(
         .target(name: "ScaleMuleSafety", dependencies: ["ScaleMuleCore"], path: "Sources/ScaleMuleSafety"),
         .target(name: "ScaleMuleFeed", dependencies: [], path: "Sources/ScaleMuleFeed"),
         .target(name: "ScaleMuleLocation", dependencies: ["ScaleMuleCore", "ScaleMuleSocial"], path: "Sources/ScaleMuleLocation"),
-        .target(name: "ScaleMule", dependencies: ["ScaleMuleCore", "ScaleMuleAuth", "ScaleMulePermissions", "ScaleMuleWorkspaces", "ScaleMuleSocial", "ScaleMuleStorage", "ScaleMulePhotos", "ScaleMuleVideos", "ScaleMuleCapture", "ScaleMuleMediaEditing", "ScaleMuleMediaQueue", "ScaleMuleLocation", "ScaleMuleFeed", "ScaleMuleSafety"], path: "Sources/ScaleMule"),
+        .target(name: "ScaleMuleProfiles", dependencies: ["ScaleMuleCore", "ScaleMuleAuth", "ScaleMuleStorage", "ScaleMulePhotos"], path: "Sources/ScaleMuleProfiles"),
+        .target(name: "ScaleMule", dependencies: ["ScaleMuleCore", "ScaleMuleAuth", "ScaleMulePermissions", "ScaleMuleWorkspaces", "ScaleMuleSocial", "ScaleMuleStorage", "ScaleMulePhotos", "ScaleMuleVideos", "ScaleMuleCapture", "ScaleMuleMediaEditing", "ScaleMuleMediaQueue", "ScaleMuleLocation", "ScaleMuleFeed", "ScaleMuleSafety", "ScaleMuleProfiles"], path: "Sources/ScaleMule"),
         .target(name: "ScaleMuleTestHelpers", dependencies: ["ScaleMuleCore"], path: "Tests/Helpers"),
         .testTarget(name: "ScaleMuleCoreTests", dependencies: ["ScaleMuleCore", "ScaleMuleTestHelpers"], path: "Tests/ScaleMuleCoreTests"),
         .testTarget(name: "ScaleMuleAuthTests", dependencies: ["ScaleMuleAuth", "ScaleMuleCore", "ScaleMuleTestHelpers"], path: "Tests/ScaleMuleAuthTests"),
@@ -48,6 +50,7 @@ let package = Package(
         .testTarget(name: "ScaleMuleVideosTests", dependencies: ["ScaleMuleVideos", "ScaleMuleStorage", "ScaleMuleCore", "ScaleMuleTestHelpers"], path: "Tests/ScaleMuleVideosTests"),
         .testTarget(name: "ScaleMuleStorageTests", dependencies: ["ScaleMuleStorage", "ScaleMuleCore", "ScaleMuleTestHelpers"], path: "Tests/ScaleMuleStorageTests"),
         .testTarget(name: "ScaleMulePhotosTests", dependencies: ["ScaleMulePhotos", "ScaleMuleStorage", "ScaleMuleCore", "ScaleMuleTestHelpers"], path: "Tests/ScaleMulePhotosTests"),
+        .testTarget(name: "ScaleMuleProfilesTests", dependencies: ["ScaleMuleProfiles", "ScaleMulePhotos", "ScaleMuleAuth", "ScaleMuleStorage", "ScaleMuleCore", "ScaleMuleTestHelpers"], path: "Tests/ScaleMuleProfilesTests"),
         .testTarget(name: "ScaleMuleWorkspacesTests", dependencies: ["ScaleMuleWorkspaces", "ScaleMuleCore", "ScaleMuleTestHelpers"], path: "Tests/ScaleMuleWorkspacesTests"),
     ]
 )

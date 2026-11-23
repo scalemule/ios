@@ -12,3 +12,4 @@
 @_exported import ScaleMuleLocation
 @_exported import ScaleMuleFeed
 @_exported import ScaleMuleSafety
+@_exported import ScaleMuleProfiles

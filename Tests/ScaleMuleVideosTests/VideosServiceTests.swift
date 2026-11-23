@@ -74,6 +74,7 @@ final class VideosServiceTests: XCTestCase {
     }
 
     #if canImport(UIKit)
+    // VideoPlaybackModel is iOS only; `swift test` on macOS builds without it.
     @MainActor
     func testSoundOnIsHeardOnSilentAndMutedLeavesOtherAudio() {
         XCTAssertEqual(VideoPlaybackModel.audioCategory(muted: false), .playback)
