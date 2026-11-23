@@ -134,7 +134,11 @@ public final class VideoPlaybackModel: ObservableObject {
     @Published public private(set) var phase: Phase = .idle
     @Published public private(set) var isPaused = false
     @Published public var isMuted = false {
-        didSet { looping.player.isMuted = isMuted }
+        didSet {
+            looping.player.isMuted = isMuted
+            // Sound turned on while playing: be heard (silent switch too).
+            if phase == .playing, !isPaused, oldValue != isMuted { Self.useAudio(muted: isMuted, category: nil) }
+        }
     }
 
     public var player: AVPlayer { looping.player }
@@ -178,6 +182,18 @@ public final class VideoPlaybackModel: ObservableObject {
         }
         startTask?.cancel()
         startTask = Task { await start() }
+    }
+
+    /// The audio session for playing with sound or muted.
+    static func useAudio(muted: Bool, category: AVAudioSession.Category?) {
+        let session = AVAudioSession.sharedInstance()
+        let chosen = category ?? audioCategory(muted: muted)
+        try? session.setCategory(chosen, mode: .moviePlayback, options: chosen == .ambient ? [.mixWithOthers] : [])
+        try? session.setActive(true)
+    }
+
+    static func audioCategory(muted: Bool) -> AVAudioSession.Category {
+        muted ? .ambient : .playback
     }
 
     public func pause() {
