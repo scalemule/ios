@@ -13,3 +13,4 @@
 @_exported import ScaleMuleFeed
 @_exported import ScaleMuleSafety
 @_exported import ScaleMuleProfiles
+@_exported import ScaleMuleMediaPosts
