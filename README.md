@@ -326,7 +326,7 @@ a ready picture or a video that starts at once:
 
 ```swift
 let prefetcher = PhotoPrefetcher(photos: photos)        // pictures, 3 at a time
-FeedPager(items: posts, activeID: $activeId, lookahead: 3,
+FeedPager(items: posts, activeID: $activeId, lookahead: 4, loadMoreDistance: 8,
           onUpcoming: { next in
               prefetcher.prefetch(next.filter(\.isPhoto).map(\.mediaId), width: screenWidth)
               VideoPreloader.shared.preload(next.filter(\.isVideo).map(\.mediaId), videos: videos)
@@ -341,8 +341,8 @@ FeedPager(items: posts, activeID: $activeId, lookahead: 3,
 - `PhotoImageCache` keeps decoded pictures within a byte budget, decodes
   them off the main thread and drops them on a memory warning (disk copies
   stay).
-- `VideoPreloader` keeps the next two videos buffered in muted, paused
-  players that `VideoPlaybackModel` takes over; they are released on a
+- `VideoPreloader` fetches about the first second of each of the next
+  four videos (TikTok style) in muted, paused players that `VideoPlaybackModel` takes over; they are released on a
   memory warning.
 
 ## Auth Credential Model

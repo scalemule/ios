@@ -231,6 +231,8 @@ public final class VideoPlaybackModel: ObservableObject {
         if let ready = VideoPreloader.shared.take(videoId) {
             objectWillChange.send()
             looping = ready
+            // On screen now: buffer as much as the network allows.
+            for item in looping.player.items() { item.preferredForwardBufferDuration = 0 }
             looping.player.isMuted = isMuted
             looping.player.play()
             phase = .playing
@@ -264,17 +266,21 @@ public final class VideoPlaybackModel: ObservableObject {
         if !Task.isCancelled { phase = .failed }
     }
 }
-/// Buffers the next videos of a feed while the current one plays, so a
-/// swipe starts the next video at once (TikTok preloads the same way). Each
-/// is a muted, paused player that `VideoPlaybackModel` takes over; at most
+/// Buffers the start of the next videos of a feed while the current one
+/// plays, so a swipe starts the next video at once. As TikTok does, only
+/// about the first second of each of the next four is fetched (most people
+/// swipe on early); once a video is on screen it buffers normally. Each is
+/// a muted, paused player that `VideoPlaybackModel` takes over; at most
 /// `capacity` are kept, the furthest dropped first, and all go on a memory
 /// warning.
 @MainActor
 public final class VideoPreloader {
     public static let shared = VideoPreloader()
 
-    /// Players kept buffered (each holds a few seconds of video).
-    public var capacity = 2
+    /// Videos kept buffered ahead.
+    public var capacity = 4
+    /// Seconds of each upcoming video fetched ahead.
+    public var bufferSeconds: Double = 1
     private var ready: [(id: String, player: LoopingPlayer)] = []
     private var tasks: [String: Task<Void, Never>] = [:]
     private var memoryWarning: NSObjectProtocol?
@@ -332,7 +338,7 @@ public final class VideoPreloader {
         looping.player.isMuted = true
         looping.player.automaticallyWaitsToMinimizeStalling = true
         let item = AVPlayerItem(url: url)
-        item.preferredForwardBufferDuration = 4
+        item.preferredForwardBufferDuration = bufferSeconds
         looping.load(item)
         looping.player.pause()
         ready.append((id, looping))
