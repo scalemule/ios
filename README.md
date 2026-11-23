@@ -39,6 +39,7 @@ Or in Xcode: File > Add Package Dependencies > enter `https://github.com/scalemu
 | `ScaleMuleMediaEditing` | Photo looks and adjustments; video composer (join clips, trim, look, mute, export, poster); watermark and save to Photos |
 | `ScaleMuleMediaQueue` | Durable background posting: survives app restarts, resumable uploads, originals on Wi-Fi; your app publishes |
 | `ScaleMuleLocation` | Location for posts and "around me": permission and real fixes, venue/city/nearest-city/exact choices (Apple Maps), a Nearby feed model |
+| `ScaleMuleFeed` | Full-screen paging feed with cell reuse (`FeedPager`), reports the posts coming next for preloading |
 | `ScaleMuleSafety` | Versioned consent (Terms, Privacy, licences), reporting content, blocking people, support messages |
 
 ## Quick Start
@@ -260,6 +261,35 @@ await nearby.load()                                   // or .place(id:name:) for
   (`ApiError.isLocationNotHere`) unless the app's server granted "Explore
   anywhere" (`PUT /v1/social/location/explorers/{user_id}`, for example after
   an App Store purchase). Simulated locations are never used.
+
+## Full-screen feeds that scroll smoothly (Feed + Photos + Videos)
+
+`FeedPager` is a TikTok/Reels-style vertical feed built on
+`UICollectionView`: only the cells near the screen exist and are reused,
+so memory stays flat however far people scroll (500 posts scroll with at
+most 4 post views alive). Preload what comes next so every swipe lands on
+a ready picture or a video that starts at once:
+
+```swift
+let prefetcher = PhotoPrefetcher(photos: photos)        // pictures, 3 at a time
+FeedPager(items: posts, activeID: $activeId, lookahead: 3,
+          onUpcoming: { next in
+              prefetcher.prefetch(next.filter(\.isPhoto).map(\.mediaId), width: screenWidth)
+              VideoPreloader.shared.preload(next.filter(\.isVideo).map(\.mediaId), videos: videos)
+          },
+          onNearEnd: { Task { await loadMore() } },
+          onRefresh: { await reload() }) { post, isActive in
+    PostView(post: post, isActive: isActive)              // play only while isActive
+        .environmentObject(app)                           // cells live in UIKit
+}
+```
+
+- `PhotoImageCache` keeps decoded pictures within a byte budget, decodes
+  them off the main thread and drops them on a memory warning (disk copies
+  stay).
+- `VideoPreloader` keeps the next two videos buffered in muted, paused
+  players that `VideoPlaybackModel` takes over; they are released on a
+  memory warning.
 
 ## Auth Credential Model
 

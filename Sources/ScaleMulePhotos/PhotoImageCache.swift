@@ -22,6 +22,19 @@ public final class PhotoImageCache {
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let folder = folder
         Task.detached(priority: .utility) { Self.prune(folder, keep: filesKept) }
+        // iOS asks for memory back: drop decoded pictures (the disk copies stay).
+        memoryWarning = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.memory.removeAllObjects() }
+        }
+    }
+
+    private var memoryWarning: NSObjectProtocol?
+
+    /// Drop every decoded picture from memory (disk copies stay).
+    public func clearMemory() {
+        memory.removeAllObjects()
     }
 
     /// The cache key for a photo (one picture per photo).
@@ -109,7 +122,11 @@ extension PhotosService {
             if Task.isCancelled { return .failure(last) }
             switch await image(id: id, width: width, fit: .contain, format: format) {
             case .success(let data):
-                guard let decoded = UIImage(data: data) else {
+                // Decoded here, off the main thread, so scrolling never waits on it.
+                let prepared = await Task.detached(priority: .userInitiated) {
+                    UIImage(data: data)?.preparingForDisplay() ?? UIImage(data: data)
+                }.value
+                guard let decoded = prepared else {
                     return .failure(ApiError(code: .internalError, message: "The photo couldn't be read"))
                 }
                 if let cache { await cache.store(decoded, data: data, for: key) }
