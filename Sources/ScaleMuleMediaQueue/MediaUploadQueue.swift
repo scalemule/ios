@@ -307,6 +307,11 @@ public final class MediaUploadQueue: ObservableObject {
         // On Wi-Fi the original at once; on mobile data a sized copy now.
         let sendOriginal = photos.originalIsCheapToSend()
         let id = record.id
+        // Queued photos upload `private`. When the app publishes them in a
+        // public Social post, Social makes them `app_public` on the server
+        // (and private again when the post is deleted), so feeds stay
+        // readable for other users. Apps uploading outside the queue can
+        // pass `visibility: .appPublic` to `PhotosService.upload`.
         let result = await photos.upload(jpeg, filename: record.filename, mimeType: "image/jpeg", quality: sendOriginal ? .original : .adaptive) { progress in
             Task { @MainActor [weak self] in self?.setProgress(progress.fraction, for: id) }
         }

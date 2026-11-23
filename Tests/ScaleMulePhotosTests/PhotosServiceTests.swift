@@ -81,6 +81,32 @@ final class PhotosServiceTests: XCTestCase {
         XCTAssertEqual(registerCalls, 2, "pending_scan is asked again")
     }
 
+    func testUploadVisibilityIsPrivateUnlessAskedForAppPublic() async {
+        let photos = await signedIn()
+        var sent: [String] = []
+        MockURLProtocol.requestHandler = { request in
+            let url = request.url!
+            if url.host == "s3.test" {
+                return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data())
+            }
+            switch url.path {
+            case "/v1/storage/signed-url/upload":
+                sent.append(self.bodyJSON(request)?["visibility"] as? String ?? "missing")
+                return TestFixtures.mockResponse(statusCode: 200, json: #"{"success":true,"data":{"file_id":"file-1","upload_url":"https://s3.test/x","completion_token":"t"}}"#)
+            case "/v1/storage/signed-url/complete":
+                return TestFixtures.mockResponse(statusCode: 200, json: #"{"success":true,"data":{"file_id":"file-1","filename":"shot.jpg","size_bytes":6,"content_type":"image/jpeg"}}"#)
+            case "/v1/photos/register":
+                return TestFixtures.mockResponse(statusCode: 201, json: "{\"success\": true, \"data\": \(Self.photoJSON)}")
+            default:
+                return TestFixtures.mockResponse(statusCode: 200, json: #"{"success":true,"data":{}}"#)
+            }
+        }
+        let jpeg = Data([0xFF, 0xD8, 0xFF, 0xE0, 0x01, 0x02])
+        _ = assertApiSuccess(await photos.upload(jpeg, filename: "shot.jpg"))
+        _ = assertApiSuccess(await photos.upload(jpeg, filename: "shot.jpg", visibility: .appPublic))
+        XCTAssertEqual(sent, ["private", "app_public"])
+    }
+
     func testAttachOriginalUploadsUnchangedThenAttaches() async {
         let photos = await signedIn()
         let original = Data(repeating: 7, count: 300_000)
