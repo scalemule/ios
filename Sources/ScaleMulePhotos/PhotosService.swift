@@ -86,6 +86,65 @@ public final class PhotosService: ServiceModule, @unchecked Sendable {
         return await register(fileId: file.id)
     }
 
+    /// True when sending the full original costs the person nothing: Wi-Fi
+    /// or wired, not Low Data Mode, not a metered hotspot. Post with
+    /// `.original` then; otherwise post `.adaptive` now and send the
+    /// original later with `attachOriginal`.
+    public func originalIsCheapToSend() -> Bool {
+        let network = storage.networkSnapshot()
+        return (network.interface == .wifi || network.interface == .wired)
+            && !network.isConstrained && !network.isExpensive
+    }
+
+    /// Make a full-resolution original the source of a photo posted smaller
+    /// (`POST /v1/photos/{id}/original`). Every size is then made from it.
+    ///
+    /// The bytes go up through Storage unchanged (multipart, resumable:
+    /// call again with the same bytes after a failure). The server accepts
+    /// only the photo's uploader, a file that passed its scan, and the same
+    /// picture as the one posted, at least as large.
+    public func attachOriginal(
+        photoId: String,
+        _ data: Data,
+        filename: String,
+        mimeType: String = "image/jpeg",
+        onProgress: (@Sendable (UploadProgress) -> Void)? = nil
+    ) async -> ApiResponse<PhotoInfo> {
+        let deliverable = await Task.detached(priority: .utility) {
+            ImageCompression.deliverableOriginal(data, contentType: mimeType, filename: filename)
+        }.value
+        let stored = await storage.uploadPrivate(deliverable.data, options: UploadOptions(
+            filename: deliverable.filename,
+            contentType: deliverable.contentType,
+            onProgress: onProgress
+        ))
+        guard case .success(let file) = stored else {
+            return .failure(stored.error ?? ApiError(code: .internalError, message: "Upload failed"))
+        }
+        let options = RequestOptions(
+            method: .post,
+            path: "/v1/photos/\(Self.segment(photoId))/original",
+            body: ["file_id": file.id],
+            credential: .accessToken
+        )
+        for attempt in 0..<3 {
+            if attempt > 0 { try? await Task.sleep(nanoseconds: 1_000_000_000) }
+            let result: ApiResponse<RegisterResult> = await client.request(options)
+            switch result {
+            case .success(let outcome):
+                if let photo = outcome.photo { return .success(photo) }
+            case .failure(let error):
+                return .failure(error)
+            }
+        }
+        return .failure(ApiError(
+            code: .unknown,
+            message: "The original is still being checked. Try again in a moment.",
+            statusCode: 202,
+            rawCode: Self.scanTimeoutCode
+        ))
+    }
+
     /// Make a photo from a file already in Storage. The server waits about
     /// 5 s for the file's safety scan; this asks again twice, a second apart.
     public func register(fileId: String) async -> ApiResponse<PhotoInfo> {

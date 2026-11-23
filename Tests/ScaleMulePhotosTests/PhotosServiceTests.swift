@@ -81,6 +81,39 @@ final class PhotosServiceTests: XCTestCase {
         XCTAssertEqual(registerCalls, 2, "pending_scan is asked again")
     }
 
+    func testAttachOriginalUploadsUnchangedThenAttaches() async {
+        let photos = await signedIn()
+        let original = Data(repeating: 7, count: 300_000)
+        var attachCalls = 0
+        MockURLProtocol.requestHandler = { request in
+            let url = request.url!
+            if url.host == "s3.test" {
+                return (HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data())
+            }
+            switch url.path {
+            case "/v1/storage/signed-url/upload":
+                let body = self.bodyJSON(request)
+                XCTAssertEqual(body?["visibility"] as? String, "private")
+                XCTAssertEqual(body?["size_bytes"] as? Int, 300_000, "the original is sent unchanged")
+                return TestFixtures.mockResponse(statusCode: 200, json: #"{"success":true,"data":{"file_id":"orig-1","upload_url":"https://s3.test/x","completion_token":"t"}}"#)
+            case "/v1/storage/signed-url/complete":
+                return TestFixtures.mockResponse(statusCode: 200, json: #"{"success":true,"data":{"file_id":"orig-1","filename":"o.jpg","size_bytes":300000,"content_type":"image/jpeg","visibility":"private"}}"#)
+            case "/v1/photos/p1/original":
+                attachCalls += 1
+                XCTAssertEqual(self.bodyJSON(request)?["file_id"] as? String, "orig-1")
+                if attachCalls == 1 {
+                    return TestFixtures.mockResponse(statusCode: 202, json: #"{"success":true,"data":{"status":"pending_scan"}}"#)
+                }
+                return TestFixtures.mockResponse(statusCode: 200, json: "{\"success\": true, \"data\": \(Self.photoJSON)}")
+            default:
+                return TestFixtures.mockResponse(statusCode: 200, json: #"{"success":true,"data":{}}"#)
+            }
+        }
+        let photo = assertApiSuccess(await photos.attachOriginal(photoId: "p1", original, filename: "o.jpg"))
+        XCTAssertEqual(photo?.id, "019b0000-0000-7000-8000-0000000000ff")
+        XCTAssertEqual(attachCalls, 2)
+    }
+
     func testImageReturnsRawBytesAndSendsSize() async {
         let photos = await signedIn()
         let bytes = Data([0x89, 0x50, 0x4E, 0x47])
