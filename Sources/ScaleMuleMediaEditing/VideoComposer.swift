@@ -63,15 +63,22 @@ public enum VideoComposer {
         return total
     }
 
-    /// A player item showing the edit as it will be posted (trim, look, sound).
-    public static func previewItem(for edit: VideoEdit) async throws -> AVPlayerItem {
+    /// The edit as it will be posted (look, sound), for a player while
+    /// editing; loop it over `timeRange` (the trim), for example with
+    /// `LoopingPlayer.load(_:timeRange:)`.
+    public struct Preview: @unchecked Sendable {
+        public let item: AVPlayerItem
+        public let timeRange: CMTimeRange
+        /// Length of all clips, before trimming.
+        public let totalSeconds: Double
+    }
+
+    public static func preview(for edit: VideoEdit, maxSeconds: Double = 60) async throws -> Preview {
         let built = try await build(edit)
         let item = AVPlayerItem(asset: built.composition)
         item.videoComposition = built.videoComposition
-        let range = trimmedRange(edit, total: built.composition.duration, maxSeconds: .infinity)
-        item.forwardPlaybackEndTime = range.end
-        await item.seek(to: range.start, toleranceBefore: .zero, toleranceAfter: .zero)
-        return item
+        let range = trimmedRange(edit, total: built.composition.duration, maxSeconds: maxSeconds)
+        return Preview(item: item, timeRange: range, totalSeconds: built.composition.duration.seconds)
     }
 
     /// Frames along the joined clips, for a trim strip.

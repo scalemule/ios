@@ -200,7 +200,7 @@ let clips = camera.finishTake()                 // or deleteLastClip(), discardT
 
 // Edit: the same looks for photos and every video frame.
 var edit = VideoEdit(clips: clips, trimStart: 0.5, trimEnd: 12, look: .vivid, muted: false)
-let preview = try await VideoComposer.previewItem(for: edit)   // AVPlayerItem while editing
+let preview = try await VideoComposer.preview(for: edit)        // looping.load(preview.item, timeRange: preview.timeRange)
 
 // Post in the background; the queue keeps it on the phone until published.
 let queue = MediaUploadQueue(photos: photos, videos: videos) { upload in

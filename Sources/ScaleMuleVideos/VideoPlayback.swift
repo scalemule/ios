@@ -46,8 +46,15 @@ public final class LoopingPlayer {
         load(AVPlayerItem(url: url))
     }
 
-    public func load(_ item: AVPlayerItem) {
-        looper = AVPlayerLooper(player: player, templateItem: item)
+    /// Loop `item`, only `timeRange` of it when given (a trimmed preview).
+    public func load(_ item: AVPlayerItem, timeRange: CMTimeRange? = nil) {
+        looper?.disableLooping()
+        player.removeAllItems()
+        if let timeRange {
+            looper = AVPlayerLooper(player: player, templateItem: item, timeRange: timeRange)
+        } else {
+            looper = AVPlayerLooper(player: player, templateItem: item)
+        }
     }
 
     public func stop() {
