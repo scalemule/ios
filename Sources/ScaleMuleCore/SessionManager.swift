@@ -2,6 +2,9 @@ import Foundation
 
 public actor SessionManager {
     private static let credentialKey = "scalemule_credentials"
+    /// The signed-in person as last confirmed by the server, so a launch
+    /// without network (or with the server briefly failing) stays signed in.
+    private static let userKey = "scalemule_user"
 
     private let keychain: KeychainStorage
     private let encoder = JSONEncoder()
@@ -74,10 +77,23 @@ public actor SessionManager {
         try setCredentials(updated)
     }
 
+    /// Remember who is signed in (stored next to the credentials).
+    public func rememberUser(_ user: AuthUser) {
+        guard currentCredentials != nil, let data = try? encoder.encode(user) else { return }
+        try? keychain.save(key: Self.userKey, data: data)
+    }
+
+    /// The person last confirmed for the stored session, if any.
+    public func rememberedUser() -> AuthUser? {
+        guard let data = try? keychain.load(key: Self.userKey) else { return nil }
+        return try? decoder.decode(AuthUser.self, from: data)
+    }
+
     /// Clear all credentials from memory and Keychain.
     public func clear() {
         currentCredentials = nil
         try? keychain.delete(key: Self.credentialKey)
+        try? keychain.delete(key: Self.userKey)
     }
 }
 
