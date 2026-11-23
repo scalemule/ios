@@ -18,9 +18,12 @@ public struct FeedPager<Item: Identifiable, Content: View>: UIViewControllerRepr
     @Binding public var activeID: Item.ID?
     /// How many posts past the one on screen `onUpcoming` reports.
     public var lookahead: Int
+    /// `onNearEnd` is called this many posts before the end, so the next
+    /// page is there before anyone reaches it.
+    public var loadMoreDistance: Int
     /// Called when the posts after the one on screen change (nearest first).
     public var onUpcoming: ([Item]) -> Void
-    /// Called when the post on screen is within `lookahead` of the end.
+    /// Called when the post on screen is within `loadMoreDistance` of the end.
     public var onNearEnd: () -> Void
     /// Pull to refresh, when given.
     public var onRefresh: (() async -> Void)?
@@ -30,7 +33,8 @@ public struct FeedPager<Item: Identifiable, Content: View>: UIViewControllerRepr
     public init(
         items: [Item],
         activeID: Binding<Item.ID?>,
-        lookahead: Int = 3,
+        lookahead: Int = 4,
+        loadMoreDistance: Int = 8,
         onUpcoming: @escaping ([Item]) -> Void = { _ in },
         onNearEnd: @escaping () -> Void = {},
         onRefresh: (() async -> Void)? = nil,
@@ -39,6 +43,7 @@ public struct FeedPager<Item: Identifiable, Content: View>: UIViewControllerRepr
         self.items = items
         _activeID = activeID
         self.lookahead = lookahead
+        self.loadMoreDistance = loadMoreDistance
         self.onUpcoming = onUpcoming
         self.onNearEnd = onNearEnd
         self.onRefresh = onRefresh
@@ -175,7 +180,7 @@ public final class FeedPagerController<Item: Identifiable, Content: View>: UIVie
             lastUpcoming = next
             pager.onUpcoming(next.compactMap { itemsByID[$0] })
         }
-        if index >= order.count - 1 - pager.lookahead { pager.onNearEnd() }
+        if index >= order.count - 1 - pager.loadMoreDistance { pager.onNearEnd() }
     }
 
     // MARK: - Scrolling

@@ -80,6 +80,8 @@ final class FeedPagerTests: XCTestCase {
     func testPreloaderKeepsAtMostItsCapacity() {
         let preloader = VideoPreloader()
         preloader.capacity = 2
+        XCTAssertEqual(VideoPreloader().capacity, 4, "TikTok style: the next four videos")
+        XCTAssertEqual(VideoPreloader().bufferSeconds, 1, "about one second of each")
         for id in ["a", "b", "c"] {
             preloader.buffer(id, url: URL(string: "https://example.com/\(id).m3u8")!)
         }
