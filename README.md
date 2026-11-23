@@ -42,6 +42,7 @@ Or in Xcode: File > Add Package Dependencies > enter `https://github.com/scalemu
 | `ScaleMuleFeed` | Full-screen paging feed with cell reuse (`FeedPager`), reports the posts coming next for preloading |
 | `ScaleMuleSafety` | Versioned consent (Terms, Privacy, licences), reporting content, blocking people, support messages |
 | `ScaleMuleProfiles` | Add, change or remove your profile photo; other people's names and photos, cached |
+| `ScaleMuleMediaPosts` | A photo and video feed kit: `MediaPost`, `MediaPostPublisher`, `SocialFeedModel` (everyone / mine / nearby, saved first page, new-post polling, likes, hiding), `RemotePhotoView`, `RemoteVideoView`, `ProfileAvatarView` |
 
 ## Quick Start
 
@@ -344,6 +345,99 @@ FeedPager(items: posts, activeID: $activeId, lookahead: 4, loadMoreDistance: 8,
 - `VideoPreloader` fetches about the first second of each of the next
   four videos (TikTok style) in muted, paused players that `VideoPlaybackModel` takes over; they are released on a
   memory warning.
+
+## Building a photo and video feed app
+
+The whole stack of a TikTok/Instagram-style app (Firehosy runs on exactly
+this). Your app draws its own screens, buttons and colours; the SDK does
+capture, editing, posting, location, the feed and the media views.
+
+```swift
+import ScaleMule
+
+let app = ScaleMuleApp(config: config)
+let social = SocialService(app: app), photos = PhotosService(app: app), videos = VideosService(app: app)
+
+// 1. Capture and edit (ScaleMuleCapture, ScaleMuleMediaEditing).
+let camera = CaptureController(maxVideoSeconds: 60)
+CapturePreview(controller: camera)
+var edit = VideoEdit(clips: camera.finishTake(), look: .vivid)
+
+// 2. Where to say it was (ScaleMuleLocation): only the chosen public point leaves the phone.
+let here = await LocationAccess.shared.freshLocation()
+let choices = await PlaceResolver.shared.choices(for: here!)
+let shared = choices.location(for: choices.defaultKind(settings))       // venue, city, spot or nil
+
+// 3. Post in the background (ScaleMuleMediaQueue) and publish a MediaPost.
+let publisher = MediaPostPublisher(social: social, tags: ["myapp-world"])
+let queue = MediaUploadQueue(photos: photos, videos: videos) { upload in
+    switch await publisher.publish(upload, authorName: MediaPostPublisher.authorName(for: user)) {
+    case .success(let post): feed.insertOwnPost(post); return .success(())
+    case .failure(let error): return .failure(.init(error.userFacingMessage))
+    }
+}
+queue.restore()
+queue.post(video: edit, attributes: MediaPostAttributes.make(caption: "Ocean Beach", location: shared),
+           capture: CaptureLocation(here!))                             // the real spot stays private
+
+// 4. The feed model: everyone's posts, yours, or nearby.
+@StateObject var feed = SocialFeedModel()                               // pageSize 20, polls every 15 s
+feed.attach(social: social, photos: photos, currentUserId: user.id)     // opens on the saved first page
+await feed.loadFeed()
+feed.filter = .nearby                                                   // or .mine / .everyone
+feed.startPolling()                                                     // feed.newItems → feed.showNewItems()
+feed.setBlockedAuthors(blockedIds); feed.hideReported(post)
+await feed.toggleLike(post); feed.likeCount(post); feed.isLiked(post)
+await feed.block(post) { await blocks.block(post.authorId, by: user.id) }
+await feed.deleteOwnPost(post)
+
+// 5. Draw it: FeedPager (cells reused, next posts preloaded) and the media views.
+FeedPager(items: feed.items, activeID: $activeId,
+          onUpcoming: { next in
+              prefetcher.prefetch(next.filter(\.isPhoto).map { (id: $0.mediaId, width: RemotePhotoView.requestWidth(wide: $0.isLandscape)) })
+              VideoPreloader.shared.preload(next.filter(\.isVideo).map(\.mediaId), videos: videos)
+          },
+          onNearEnd: { Task { await feed.loadMore() } },
+          onRefresh: { await feed.refresh() }) { post, isActive in
+    ZStack {
+        if post.isVideo {
+            RemoteVideoView(post: post, size: screen, isActive: isActive, videos: videos, topInset: safeTop)
+        } else {
+            RemotePhotoView(photoId: post.mediaId, size: screen, wide: post.isLandscape, photos: photos,
+                            wideStyle: .pan(hint: "Swipe sideways")) { image in open(image) }
+        }
+        // Your overlay: post.authorName, post.caption, post.place, post.timeAgo(),
+        // post.distanceString(from: here), feed.likeCount(post) ...
+        ProfileAvatarView(url: avatarURL, name: post.authorName, background: .mint, foreground: .black)
+    }
+}
+
+// 6. Profiles (ScaleMuleProfiles): authors' names and photos, cached.
+let people = PublicProfiles(app: app)
+let avatarURL = post.isMine ? user.avatarURL : await people.profile(post.authorId)?.avatarURL
+```
+
+- `MediaPost` reads any Social post whose first media id is a photo or a
+  video, with the metadata keys in `MediaPost.Keys` (`kind`, `author_name`,
+  `place`, `width`, `height`, `caption`, `duration`). Posts from before post
+  locations (only `place` in metadata) still read; coordinates in metadata
+  are never used. It is `Codable` for saved copies.
+- `MediaPostPublisher` never puts coordinates in metadata: the location goes
+  in the post's `location` (Social snaps it to its precision) and its label in
+  `place` for older readers.
+- `SocialFeedModel`: a load replaced by a newer one (another filter) never
+  overwrites it; likes start from the server's `liked_by_me` and a 409 counts
+  as already liked; `showFixed(_:)` shows sample posts for previews and UI
+  tests. Its "Nearby" errors are `nearbyProblemMessage`.
+- `RemotePhotoView` starts from the memory cache (no spinner for a preloaded
+  photo), shows "Checking photo…" during the safety check and "Tap to try
+  again" after a failure; it fetches 1080 (upright) or 1600 (wide). Its
+  `loader` replaces the network for previews and UI tests.
+- `RemoteVideoView` plays while `isActive`, pauses on tap and remembers the
+  mute button (`muteKey`). Both views are neutral (white on black); text is
+  in `labels`. `ProfileAvatarView` takes your colours and font.
+- ScaleMule Video has no delete yet: `deleteOwnPost` deletes a video post but
+  not its video.
 
 ## Auth Credential Model
 
