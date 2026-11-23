@@ -11,6 +11,9 @@ public actor HTTPClient {
 
     private static let sdkVersion = "0.0.1"
 
+    /// The configuration this client sends requests with.
+    public nonisolated var configuration: Configuration { config }
+
     public init(
         config: Configuration,
         sessionManager: SessionManager,
@@ -284,6 +287,10 @@ public actor HTTPClient {
         request.setValue(config.apiKey, forHTTPHeaderField: "x-api-key")
         request.setValue("ScaleMule-SDK-Swift/\(Self.sdkVersion)", forHTTPHeaderField: "User-Agent")
         request.setValue(options.accept ?? "application/json", forHTTPHeaderField: "Accept")
+
+        for (name, value) in options.headers {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
 
         // Workspace header
         if let workspaceId = await workspaceContext.workspaceId {

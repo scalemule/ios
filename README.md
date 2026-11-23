@@ -32,6 +32,7 @@ Or in Xcode: File > Add Package Dependencies > enter `https://github.com/scalemu
 | `ScaleMulePermissions` | Roles, permission checks, policies |
 | `ScaleMuleWorkspaces` | Workspace CRUD, members, invitations, SSO |
 | `ScaleMuleSocial` | Posts, the app feed, likes |
+| `ScaleMuleStorage` | Uploads straight to S3: sized to the connection, multipart, retried, resumable |
 | `ScaleMulePhotos` | Photo upload (checked for unsafe content) and sized images |
 | `ScaleMuleSafety` | Versioned consent (Terms, Privacy, licences), reporting content, blocking people, support messages |
 
@@ -119,8 +120,10 @@ visible only to their author.
 let photos = PhotosService(app: app)
 let social = SocialService(app: app)
 
-// Post
-let photo = await photos.upload(jpegData, filename: "now.jpg")
+// Post (sized to the connection, resumable; see Uploads below)
+let photo = await photos.upload(jpegData, filename: "now.jpg") { progress in
+    print(progress.fraction)
+}
 if case .success(let info) = photo {
     _ = await social.createPost(content: "Ocean Beach", mediaIds: [info.id],
                                 metadata: ["width": info.width, "height": info.height])
@@ -135,6 +138,41 @@ if case .success(let posts) = await social.feed(page: 1, perPage: 20) {
     }
 }
 ```
+
+## Uploads (Storage)
+
+`StorageService` is the same upload pipeline as the ScaleMule web SDK, so
+mobile and web uploads behave and report alike:
+
+- **Sized to the connection.** Images are made smaller on the phone first
+  (`compression: .adaptive`): 3840 px at 0.85 on a fast network, 2048 px at
+  0.75 on 3G-like speeds, down to 1280 px at 0.6. The class comes from the
+  interface (Wi-Fi, cellular), Low Data Mode and the upload speed this device
+  actually measured on recent uploads. Capture metadata is kept; the platform
+  keeps the original privately and strips the copy it serves.
+- **Straight to S3.** Bytes never pass through the API: one presigned PUT for
+  small files, S3 multipart above 8 MB (1 MB on a slow connection), with
+  several parts in flight.
+- **Retried and resumed.** Every PUT is retried (now, 1 s, 3 s); no progress
+  for 45 s (90 s when slow) counts as a stall and is retried; an expired part
+  link is refreshed. Finished parts are recorded on the device, so uploading
+  the same bytes again, even after the app was closed, sends only the missing
+  parts (server sessions last 24 hours). Cancelling the task aborts the
+  upload on the server.
+- **Measured.** `upload.*` events (the web SDK's names) go to ScaleMule
+  analytics and logs, and failures are reported to Storage with the
+  connection details.
+
+```swift
+let storage = StorageService(app: app)
+let result = await storage.upload(data, options: UploadOptions(
+    filename: "clip.mov", contentType: "video/quicktime", compression: .off,
+    onProgress: { progress in print(progress.fraction) }))
+```
+
+`PhotosService.upload` uses this pipeline and then registers the file with
+Photos (waiting out the safety scan). Pass `quality: .original` to send the
+full-resolution photo unchanged.
 
 ## Auth Credential Model
 
