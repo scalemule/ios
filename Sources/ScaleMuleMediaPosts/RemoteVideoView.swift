@@ -15,6 +15,13 @@ import ScaleMuleVideos
 /// Colours are neutral (white on black). Draw it full-bleed under the status
 /// bar with `topInset` (the status bar's height); the mute button sits
 /// `muteButtonTop` below it.
+///
+/// Captions (ScaleMule Video, transcribed when the video was posted) show
+/// while the sound is off, or always with the iPhone's Closed Captions
+/// setting; a CC button under the mute button turns them on or off for every
+/// video (`CaptionPreferences`). They sit `captionBottomInset` above the
+/// bottom, or pass `caption` to draw `VideoCaptionView` in your own layout,
+/// for example just above the post's name and place.
 public struct RemoteVideoView: View {
     /// Text shown over the video.
     public struct Labels: Sendable {
@@ -22,17 +29,23 @@ public struct RemoteVideoView: View {
         public var failed: String
         public var mute: String
         public var unmute: String
+        public var showCaptions: String
+        public var hideCaptions: String
 
         public init(
             processing: String = "Getting this video ready…",
             failed: String = "Video didn't load. Tap to try again",
             mute: String = "Mute videos",
-            unmute: String = "Turn sound on"
+            unmute: String = "Turn sound on",
+            showCaptions: String = "Show captions",
+            hideCaptions: String = "Hide captions"
         ) {
             self.processing = processing
             self.failed = failed
             self.mute = mute
             self.unmute = unmute
+            self.showCaptions = showCaptions
+            self.hideCaptions = hideCaptions
         }
     }
 
@@ -46,9 +59,12 @@ public struct RemoteVideoView: View {
     private let posterCache: PhotoImageCache?
     private let localFile: URL?
     private let labels: Labels
+    private let captionBottomInset: CGFloat
+    private let captionOut: Binding<String?>?
 
     @AppStorage private var muted: Bool
     @StateObject private var model: VideoPlaybackModel
+    @ObservedObject private var captionPreferences: CaptionPreferences
 
     /// - Parameters:
     ///   - landscape: wider than tall: shown whole over a blurred copy of the poster.
@@ -56,6 +72,9 @@ public struct RemoteVideoView: View {
     ///     new video (`PhotoImageCache.key(for: videoId)`).
     ///   - localFile: play this file instead of the stream (previews, UI tests).
     ///   - muteKey: the UserDefaults key remembering the mute choice.
+    ///   - caption: receives the caption to show (nil when none or hidden);
+    ///     the view then draws none itself.
+    ///   - captionBottomInset: where the view draws captions itself, from the bottom.
     public init(
         videoId: String,
         size: CGSize,
@@ -67,8 +86,14 @@ public struct RemoteVideoView: View {
         posterCache: PhotoImageCache? = .shared,
         localFile: URL? = nil,
         muteKey: String = "feed.videosMuted",
-        labels: Labels = Labels()
+        labels: Labels = Labels(),
+        caption: Binding<String?>? = nil,
+        captionBottomInset: CGFloat = 150,
+        captionPreferences: CaptionPreferences = .shared
     ) {
+        self.captionOut = caption
+        self.captionBottomInset = captionBottomInset
+        _captionPreferences = ObservedObject(wrappedValue: captionPreferences)
         self.videoId = videoId
         self.size = size
         self.isActive = isActive
@@ -93,14 +118,18 @@ public struct RemoteVideoView: View {
         posterCache: PhotoImageCache? = .shared,
         localFile: URL? = nil,
         muteKey: String = "feed.videosMuted",
-        labels: Labels = Labels()
+        labels: Labels = Labels(),
+        caption: Binding<String?>? = nil,
+        captionBottomInset: CGFloat = 150,
+        captionPreferences: CaptionPreferences = .shared
     ) {
         var landscape = false
         if let width = post.width, let height = post.height { landscape = width > height }
         self.init(
             videoId: post.mediaId, size: size, isActive: isActive, videos: videos, landscape: landscape,
             topInset: topInset, muteButtonTop: muteButtonTop, posterCache: posterCache,
-            localFile: localFile, muteKey: muteKey, labels: labels
+            localFile: localFile, muteKey: muteKey, labels: labels,
+            caption: caption, captionBottomInset: captionBottomInset, captionPreferences: captionPreferences
         )
     }
 
@@ -145,6 +174,33 @@ public struct RemoteVideoView: View {
             .padding(.trailing, 16)
             .accessibilityLabel(muted ? labels.unmute : labels.mute)
         }
+        .overlay(alignment: .topTrailing) {
+            if model.hasCaptions {
+                let showing = captionPreferences.showsCaptions(muted: muted)
+                Button {
+                    captionPreferences.toggle(muted: muted)
+                } label: {
+                    Image(systemName: showing ? "captions.bubble.fill" : "captions.bubble")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(width: 36, height: 36)
+                        .background(.black.opacity(0.4), in: Circle())
+                }
+                .padding(.top, topInset + muteButtonTop + 46)
+                .padding(.trailing, 16)
+                .accessibilityLabel(showing ? labels.hideCaptions : labels.showCaptions)
+                .accessibilityIdentifier("captionsButton")
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if captionOut == nil, let shown = shownCaption {
+                VideoCaptionView(shown)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, captionBottomInset)
+            }
+        }
+        .onChange(of: shownCaption) { value in captionOut?.wrappedValue = value }
+        .onDisappear { captionOut?.wrappedValue = nil }
         .task {
             model.isMuted = muted
             // Your own new video's poster is already on this phone.
@@ -161,6 +217,12 @@ public struct RemoteVideoView: View {
         .onDisappear { model.stop() }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Video")
+    }
+
+    /// The caption to show now: there is one, and captions are on.
+    private var shownCaption: String? {
+        guard isActive, let caption = model.caption, captionPreferences.showsCaptions(muted: muted) else { return nil }
+        return caption
     }
 
     private func start() {

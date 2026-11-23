@@ -35,7 +35,9 @@ public struct MediaUpload: Sendable {
 /// Photos: on Wi-Fi the full original goes up at once; on mobile data a copy
 /// sized for the connection, and the original follows on Wi-Fi
 /// (`PhotosService.attachOriginal`). Videos: the take's clips are joined and
-/// edited (`VideoComposer`) once, then uploaded to ScaleMule Video.
+/// edited (`VideoComposer`) once, then uploaded to ScaleMule Video. Their
+/// speech is turned into captions on the phone while they upload
+/// (`VideoCaptioner`) and saved with the video before the post is published.
 ///
 /// The app supplies `publish` (for example a Social post) and observes `jobs`.
 ///
@@ -81,6 +83,11 @@ public final class MediaUploadQueue: ObservableObject {
         /// Where and when it was taken: written into the uploaded file only,
         /// for the platform to keep privately.
         var capture: CaptureLocation?
+        /// Videos: speech recognition ran (captions below when it heard any).
+        var transcribed: Bool?
+        var captionLanguage: String?
+        var captionCues: [CaptionCue]?
+        var captionsSent: Bool?
     }
 
     public typealias Publish = @MainActor (MediaUpload) async -> Result<Void, PublishError>
@@ -91,6 +98,9 @@ public final class MediaUploadQueue: ObservableObject {
     }
 
     @Published public private(set) var jobs: [Job] = []
+    /// Caption posted videos from their speech (needs the app's
+    /// `NSSpeechRecognitionUsageDescription`; see `VideoCaptioner`).
+    public var transcribesSpeech = true
     /// The phone's copy of each finished upload (by media id), to show it at once.
     public private(set) var previews: [String: UIImage] = [:]
 
@@ -273,6 +283,7 @@ public final class MediaUploadQueue: ObservableObject {
                 return
             }
             guard uploaded, let mediaId = record.mediaId else { return }
+            if record.kind == .video { await sendCaptions(&record) }
             let upload = MediaUpload(
                 id: id, kind: record.kind, mediaId: mediaId,
                 width: record.width ?? 0, height: record.height ?? 0,
@@ -359,6 +370,13 @@ public final class MediaUploadQueue: ObservableObject {
             }
         }
         guard record.mediaId == nil else { return true }
+        // Captions while it uploads (on the phone; seconds for a short video).
+        var transcription: Task<VideoCaptioner.Result?, Never>?
+        if transcribesSpeech, record.transcribed != true {
+            let source = videoURL(record.id)
+            transcription = Task { await VideoCaptioner.transcribe(source) }
+        }
+        defer { transcription?.cancel() }
         guard let file = try? Data(contentsOf: videoURL(record.id)) else {
             setState(.failed("The video is no longer on this phone."), for: record.id)
             return false
@@ -369,6 +387,12 @@ public final class MediaUploadQueue: ObservableObject {
         }) {
         case .success(let video):
             record.mediaId = video.videoId
+            if let transcription {
+                let result = await transcription.value
+                record.transcribed = true
+                record.captionLanguage = result?.language
+                record.captionCues = result?.cues
+            }
             update(record)
             VideoFileCache.keep(videoURL(record.id), for: video.videoId)
             if let poster = localPreviews[record.id] {
@@ -379,6 +403,26 @@ public final class MediaUploadQueue: ObservableObject {
         case .failure(let error):
             setState(.failed(error.userFacingMessage), for: record.id)
             return false
+        }
+    }
+
+    /// Save the video's captions with ScaleMule Video (once). The post goes
+    /// out whatever happens here: captions are a bonus, never a blocker.
+    private func sendCaptions(_ record: inout Record) async {
+        guard record.captionsSent != true, let mediaId = record.mediaId,
+              let language = record.captionLanguage, let cues = record.captionCues, !cues.isEmpty else { return }
+        VideoCaptionStore.shared.store(CaptionTrack(language: language, cues: cues), for: mediaId)
+        for attempt in 0..<3 {
+            switch await videos.uploadCaptions(id: mediaId, language: language, cues: cues) {
+            case .success:
+                record.captionsSent = true
+                update(record)
+                return
+            case .failure(let error) where (error.statusCode ?? 0) >= 400 && (error.statusCode ?? 0) < 500:
+                return // refused: trying again changes nothing
+            case .failure:
+                try? await Task.sleep(nanoseconds: UInt64(attempt + 1) * 2_000_000_000)
+            }
         }
     }
 

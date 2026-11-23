@@ -148,6 +148,10 @@ public final class VideoPlaybackModel: ObservableObject {
     @Published public private(set) var poster: UIImage?
     @Published public private(set) var phase: Phase = .idle
     @Published public private(set) var isPaused = false
+    /// The caption on screen now (ScaleMule Video captions), or nil.
+    @Published public private(set) var caption: String?
+    /// The video has captions (show a CC button).
+    @Published public private(set) var hasCaptions = false
     @Published public var isMuted = false {
         didSet {
             looping.player.isMuted = isMuted
@@ -165,6 +169,10 @@ public final class VideoPlaybackModel: ObservableObject {
     private var analytics: PlaybackAnalytics?
     /// Audio session category last applied by `play` (for tests).
     private(set) var appliedAudioCategory: AVAudioSession.Category?
+    private lazy var captionClock = CaptionClock { [weak self] text in self?.caption = text }
+    private var captionTask: Task<Void, Never>?
+    /// Set to false to skip fetching captions.
+    public var loadsCaptions = true
     private static let posters = NSCache<NSString, UIImage>()
 
     public init(videoId: String, videos: VideosService, poster: UIImage? = nil) {
@@ -210,9 +218,10 @@ public final class VideoPlaybackModel: ObservableObject {
         if analytics == nil, PlaybackAnalytics.isEnabled {
             analytics = PlaybackAnalytics(videoId: videoId, videos: videos)
         }
+        loadCaptions()
         if phase == .playing {
             looping.player.play()
-            analytics?.attach(looping.player)
+            playerStarted()
             return
         }
         startTask?.cancel()
@@ -253,6 +262,9 @@ public final class VideoPlaybackModel: ObservableObject {
         startTask?.cancel()
         analytics?.finish()
         analytics = nil
+        captionTask?.cancel()
+        captionTask = nil
+        captionClock.detach()
         looping.stop()
         phase = .idle
     }
@@ -262,8 +274,28 @@ public final class VideoPlaybackModel: ObservableObject {
         looping.load(file)
         looping.player.isMuted = isMuted
         looping.player.play()
-        analytics?.attach(looping.player)
+        playerStarted()
         phase = .playing
+    }
+
+    /// The player that plays now (it changes when a preloaded one is taken).
+    private func playerStarted() {
+        analytics?.attach(looping.player)
+        if hasCaptions { captionClock.attach(looping.player) }
+    }
+
+    private func loadCaptions() {
+        guard loadsCaptions, !hasCaptions, captionTask == nil else { return }
+        let videoId = videoId, videos = videos
+        captionTask = Task { [weak self] in
+            let track = await VideoCaptionStore.shared.track(for: videoId, videos: videos)
+            guard let self, !Task.isCancelled else { return }
+            self.captionTask = nil
+            guard let track else { return }
+            self.hasCaptions = true
+            self.captionClock.set(track: track)
+            if self.phase == .playing { self.captionClock.attach(self.looping.player) }
+        }
     }
 
     private func start() async {
@@ -279,7 +311,7 @@ public final class VideoPlaybackModel: ObservableObject {
             for item in looping.player.items() { item.preferredForwardBufferDuration = 0 }
             looping.player.isMuted = isMuted
             looping.player.play()
-            analytics?.attach(looping.player)
+            playerStarted()
             phase = .playing
             return
         }
