@@ -174,6 +174,13 @@ let result = await storage.upload(data, options: UploadOptions(
 Photos (waiting out the safety scan). Pass `quality: .original` to send the
 full-resolution photo unchanged.
 
+To keep originals without making people wait on mobile data, post
+`.original` when `photos.originalIsCheapToSend()` (Wi-Fi, not Low Data
+Mode), and otherwise post `.adaptive` now and later, on Wi-Fi, call
+`photos.attachOriginal(photoId:_:filename:)`. The original becomes the
+photo's source (every size is made from it); the server accepts only the
+uploader and the same picture, at least as large.
+
 ## Auth Credential Model
 
 ScaleMule uses a multi-credential system, not a single bearer token:
