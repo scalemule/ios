@@ -269,12 +269,19 @@ public final class StorageService: ServiceModule, @unchecked Sendable {
                     if urls[part] == nil {
                         // Ask for the next window of links at once.
                         let wanted = pending[next...].prefix(16).filter { urls[$0] == nil }
-                        if case .success(let fresh) = await fetchPartURLs(job, session: session, parts: Array(wanted)) {
+                        switch await fetchPartURLs(job, session: session, parts: Array(wanted)) {
+                        case .success(let fresh):
                             urls.merge(fresh) { $1 }
+                        case .failure(let error):
+                            // Keeps the session: the next try resumes here.
+                            let offline = error.code == .networkError || error.code == .timeout
+                            failure = (part, S3Failure(code: offline ? .networkError : .serverError, status: error.statusCode,
+                                                       body: "Part links: \(error.message)", attempts: 1))
+                            return
                         }
                     }
                     guard let link = urls[part], let url = URL(string: link) else {
-                        failure = (part, S3Failure(code: .signatureError, status: nil, body: "No upload link for part", attempts: 0))
+                        failure = (part, S3Failure(code: .serverError, status: nil, body: "No upload link for part \(part)", attempts: 0))
                         return
                     }
                     let range = partRange(part, session: session, size: job.data.count)
