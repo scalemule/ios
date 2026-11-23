@@ -33,6 +33,10 @@ public final class SocialService: ServiceModule, @unchecked Sendable {
     // MARK: - Posts
 
     /// Create a post. `content` must be 1-5000 characters.
+    ///
+    /// `location` is the public point the person chose (see
+    /// `ScaleMuleLocation`); never put coordinates in `metadata`: Social
+    /// removes them there.
     public func createPost(
         content: String,
         title: String? = nil,
@@ -40,7 +44,8 @@ public final class SocialService: ServiceModule, @unchecked Sendable {
         mediaUrls: [String]? = nil,
         visibility: PostVisibility = .public,
         tags: [String]? = nil,
-        metadata: [String: Any]? = nil
+        metadata: [String: Any]? = nil,
+        location: SharedLocation? = nil
     ) async -> ApiResponse<SocialPost> {
         var body: [String: Any] = [
             "content": content,
@@ -51,6 +56,7 @@ public final class SocialService: ServiceModule, @unchecked Sendable {
         if let mediaUrls { body["media_urls"] = mediaUrls }
         if let tags { body["tags"] = tags }
         if let metadata { body["metadata"] = metadata }
+        if let location { body["location"] = location.body }
 
         return await client.request(RequestOptions(
             method: .post,

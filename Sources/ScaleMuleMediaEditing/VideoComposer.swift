@@ -101,8 +101,10 @@ public enum VideoComposer {
         return images
     }
 
-    /// The finished file, at most `maxSeconds` long.
-    public static func export(_ edit: VideoEdit, maxSeconds: Double = 60) async throws -> PreparedVideo {
+    /// The finished file, at most `maxSeconds` long. `location` is written into
+    /// the file for ScaleMule Video to keep privately (it serves copies without
+    /// it); nothing else in the file says where it was made.
+    public static func export(_ edit: VideoEdit, maxSeconds: Double = 60, location: CaptureLocation? = nil) async throws -> PreparedVideo {
         let built = try await build(edit)
         let output = FileManager.default.temporaryDirectory.appendingPathComponent("scalemule-\(UUID().uuidString).mp4")
         let preset = AVAssetExportSession.allExportPresets().contains(AVAssetExportPresetHEVC1920x1080)
@@ -114,6 +116,7 @@ public enum VideoComposer {
         session.timeRange = range
         session.videoComposition = built.videoComposition
         session.shouldOptimizeForNetworkUse = true
+        if let location { session.metadata = captureMetadata(location) }
         try await run(session, to: output)
 
         let exported = AVURLAsset(url: output)
@@ -194,6 +197,18 @@ public enum VideoComposer {
             start: CMTime(seconds: start, preferredTimescale: 600),
             end: CMTime(seconds: max(end, start + 0.1), preferredTimescale: 600)
         )
+    }
+
+    static func captureMetadata(_ capture: CaptureLocation) -> [AVMetadataItem] {
+        let place = AVMutableMetadataItem()
+        place.identifier = .quickTimeMetadataLocationISO6709
+        place.value = capture.iso6709 as NSString
+        place.dataType = kCMMetadataBaseDataType_UTF8 as String
+        let date = AVMutableMetadataItem()
+        date.identifier = .quickTimeMetadataCreationDate
+        date.value = ISO8601DateFormatter().string(from: capture.takenAt) as NSString
+        date.dataType = kCMMetadataBaseDataType_UTF8 as String
+        return [place, date]
     }
 
     private static func run(_ session: AVAssetExportSession, to output: URL) async throws {

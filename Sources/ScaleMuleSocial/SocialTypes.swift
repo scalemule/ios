@@ -25,6 +25,8 @@ public struct SocialPost: Sendable, Decodable, Identifiable, Equatable {
     public let visibility: PostVisibility
     public let tags: [String]?
     public let metadata: [String: AnyCodable]?
+    /// Where the post was, as its author chose to share it.
+    public let location: SharedLocation?
     public let likesCount: Int
     public let commentsCount: Int
     public let sharesCount: Int
@@ -37,7 +39,7 @@ public struct SocialPost: Sendable, Decodable, Identifiable, Equatable {
         case content, title
         case mediaUrls = "media_urls"
         case mediaIds = "media_ids"
-        case visibility, tags, metadata
+        case visibility, tags, metadata, location
         case likesCount = "likes_count"
         case commentsCount = "comments_count"
         case sharesCount = "shares_count"
@@ -55,6 +57,7 @@ public struct SocialPost: Sendable, Decodable, Identifiable, Equatable {
         visibility = (try? c.decode(PostVisibility.self, forKey: .visibility)) ?? .public
         tags = try c.decodeIfPresent([String].self, forKey: .tags)
         metadata = try c.decodeIfPresent([String: AnyCodable].self, forKey: .metadata)
+        location = try? c.decodeIfPresent(SharedLocation.self, forKey: .location)
         likesCount = try c.decodeIfPresent(Int.self, forKey: .likesCount) ?? 0
         commentsCount = try c.decodeIfPresent(Int.self, forKey: .commentsCount) ?? 0
         sharesCount = try c.decodeIfPresent(Int.self, forKey: .sharesCount) ?? 0

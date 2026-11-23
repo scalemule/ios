@@ -31,13 +31,14 @@ Or in Xcode: File > Add Package Dependencies > enter `https://github.com/scalemu
 | `ScaleMuleAuth` | Authentication (register, login, MFA, OAuth, sessions, devices) |
 | `ScaleMulePermissions` | Roles, permission checks, policies |
 | `ScaleMuleWorkspaces` | Workspace CRUD, members, invitations, SSO |
-| `ScaleMuleSocial` | Posts, the app feed, likes |
+| `ScaleMuleSocial` | Posts, the app feed, likes; post locations and search near / at a venue |
 | `ScaleMuleStorage` | Uploads straight to S3: sized to the connection, multipart, retried, resumable |
 | `ScaleMulePhotos` | Photo upload (checked for unsafe content) and sized images |
 | `ScaleMuleVideos` | Short videos: resumable upload, adaptive streaming (HLS) playback links |
 | `ScaleMuleCapture` | Camera for capture screens: photos, multi-clip video takes, zoom/focus/flash, preview (iOS 17+) |
 | `ScaleMuleMediaEditing` | Photo looks and adjustments; video composer (join clips, trim, look, mute, export, poster); watermark and save to Photos |
 | `ScaleMuleMediaQueue` | Durable background posting: survives app restarts, resumable uploads, originals on Wi-Fi; your app publishes |
+| `ScaleMuleLocation` | Location for posts and "around me": permission and real fixes, venue/city/nearest-city/exact choices (Apple Maps), a Nearby feed model |
 | `ScaleMuleSafety` | Versioned consent (Terms, Privacy, licences), reporting content, blocking people, support messages |
 
 ## Quick Start
@@ -218,6 +219,47 @@ let model = VideoPlaybackModel(videoId: videoId, videos: videos)   // poster, wa
 PlayerLayerView(player: model.player, gravity: .resizeAspectFill)
 model.play(); model.togglePause(); model.isMuted = true
 ```
+
+## Location: privacy and "around me" (Social + Location)
+
+People pick per post how much of where they are to share; nobody's spot is
+exposed and "Nearby" stays fast for any number of posts. Platform contract:
+scalemule-repos `docs/LOCATION-PRIVACY.md`.
+
+```swift
+// Info.plist: NSLocationWhenInUseUsageDescription
+let access = LocationAccess.shared
+access.requestPermission()
+
+// Share screen: the ways this fix can be shared (venue, city or nearest
+// city, exact spot, none). Only the chosen public point leaves the phone.
+var settings = LocationSettings.standard
+if case .success(let fromApp) = await social.locationSettings() { settings = fromApp }
+if let here = await access.freshLocation() {
+    let choices = await PlaceResolver.shared.choices(for: here)
+    let kind = choices.defaultKind(settings)          // .city unless the app says otherwise
+    let shared = choices.location(for: kind)          // nil for .none
+    queue.post(photo: image, attributes: [...], capture: CaptureLocation(here))
+    // ...and the app's publish step passes `shared` to
+    // social.createPost(..., location: shared)
+}
+
+// "Around me": only from a real, fresh fix; widens 5 → 25 → 160 km.
+let nearby = NearbyFeed(social: social)
+await nearby.load()                                   // or .place(id:name:) for a venue
+// nearby.problem == .notHere → offer "Explore anywhere"
+```
+
+- `capture` (where and when it was taken) goes into the uploaded file only.
+  ScaleMule Photos and Video keep it privately with the original and serve
+  copies without it. Do not strip it on the phone, and never put
+  coordinates in post `metadata` (Social removes them).
+- Social snaps every shared point to its precision (city about 2 km, area
+  about 11 km) and searches only public posts by those points.
+- Searching follows where the person is: a jump nobody could make is refused
+  (`ApiError.isLocationNotHere`) unless the app's server granted "Explore
+  anywhere" (`PUT /v1/social/location/explorers/{user_id}`, for example after
+  an App Store purchase). Simulated locations are never used.
 
 ## Auth Credential Model
 
