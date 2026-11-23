@@ -137,6 +137,7 @@ final class VideosServiceTests: XCTestCase {
         PlaybackAnalytics.isEnabled = false
         defer { PlaybackAnalytics.isEnabled = true }
         let model = VideoPlaybackModel(videoId: "v", videos: VideosService(app: app))
+        model.loadsCaptions = false
         model.isMuted = false
         model.play()
         XCTAssertEqual(model.appliedAudioCategory, .playback)

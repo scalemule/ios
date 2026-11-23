@@ -91,6 +91,7 @@ public final class VideosService: ServiceModule, @unchecked Sendable {
         VideoLinkCache.shared.forget(id)
         VideoPreloader.shared.forget(id)
         VideoPlaybackModel.forgetPoster(id)
+        VideoCaptionStore.shared.forget(id)
         #endif
     }
 
