@@ -18,6 +18,8 @@ public enum S3UploadErrorCode: String, Sendable {
     /// No bytes moved for the stall timeout.
     case stalled
     case cancelled = "aborted"
+    /// The server no longer has the multipart session.
+    case sessionExpired = "upload_session_expired"
 }
 
 struct S3Failure: Error, Sendable {
@@ -78,7 +80,7 @@ final class S3Transfer: Sendable {
             var request = URLRequest(url: url, timeoutInterval: stallTimeout)
             request.httpMethod = "PUT"
             request.setValue(contentType, forHTTPHeaderField: "Content-Type")
-            switch await put(request, data: data, onProgress: onProgress) {
+            switch await put(request, data: data, measureSpeed: true, onProgress: onProgress) {
             case .success:
                 return .success(())
             case .failure(let failure):
@@ -108,7 +110,7 @@ final class S3Transfer: Sendable {
             if Task.isCancelled { return .failure(S3Failure(code: .cancelled, status: nil, body: nil, attempts: attempt + 1)) }
             var request = URLRequest(url: url, timeoutInterval: stallTimeout)
             request.httpMethod = "PUT"
-            switch await put(request, data: data, onProgress: onProgress) {
+            switch await put(request, data: data, measureSpeed: false, onProgress: onProgress) {
             case .success(let etag):
                 if let etag, !etag.isEmpty { return .success(etag) }
                 last = S3Failure(code: .missingETag, status: 200, body: nil, attempts: attempt + 1)
@@ -135,7 +137,9 @@ final class S3Transfer: Sendable {
 
     /// The request's timeout is the idle timeout: it fires when no bytes
     /// move for that long, which is exactly a stall.
-    private func put(_ request: URLRequest, data: Data, onProgress: @escaping @Sendable (Int64) -> Void) async -> Result<String?, S3Failure> {
+    /// Parts share the link with each other, so a part's own speed is a
+    /// fraction of the connection's: multipart uploads measure as a whole.
+    private func put(_ request: URLRequest, data: Data, measureSpeed: Bool, onProgress: @escaping @Sendable (Int64) -> Void) async -> Result<String?, S3Failure> {
         let started = Date()
         let delegate = ProgressDelegate(onProgress: onProgress)
         do {
@@ -144,7 +148,7 @@ final class S3Transfer: Sendable {
                 return .failure(S3Failure(code: .networkError, status: nil, body: nil, attempts: 1))
             }
             if (200..<300).contains(http.statusCode) {
-                conditions.recordUpload(bytes: data.count, seconds: Date().timeIntervalSince(started))
+                if measureSpeed { conditions.recordUpload(bytes: data.count, seconds: Date().timeIntervalSince(started)) }
                 return .success(http.value(forHTTPHeaderField: "ETag"))
             }
             let text = String(decoding: body.prefix(Self.maxErrorBody), as: UTF8.self)

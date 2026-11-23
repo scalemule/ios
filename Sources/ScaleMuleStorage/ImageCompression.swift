@@ -40,6 +40,12 @@ public enum ImageCompression {
             return .skipped(reason: "decode_failed")
         }
 
+        // JPEG has no transparency: a transparent PNG (logo, sticker) keeps its format.
+        if let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           properties[kCGImagePropertyHasAlpha] as? Bool == true, !isHEIC {
+            return .skipped(reason: "transparency")
+        }
+
         var maxPixelSize = profile.maxPixelSize
         var quality = profile.quality
         var best: Data?

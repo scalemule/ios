@@ -49,10 +49,11 @@ public final class PhotosService: ServiceModule, @unchecked Sendable {
 
     /// Upload one image as the signed-in person and register it as a photo.
     ///
-    /// Not a single request: the bytes go to S3 through Storage (resumable
-    /// on failure: calling this again with the same bytes continues where
-    /// it stopped), then Photos registers the file once its safety scan has
-    /// passed (waiting up to about 17 s, like the web SDK).
+    /// Not a single request: the bytes go to S3 through Storage (every PUT
+    /// retried; a multipart upload, as for a `.original` photo, continues
+    /// where it stopped when called again with the same bytes), then Photos
+    /// registers the file once its safety scan has passed (waiting up to
+    /// about 17 s, like the web SDK).
     public func upload(
         _ data: Data,
         filename: String,

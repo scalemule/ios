@@ -41,6 +41,17 @@ actor UploadResumeStore {
         return SHA256.hash(data: Data(raw.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
+    private var inFlight: Set<String> = []
+
+    /// False while another upload of the same bytes is running in this app.
+    func claim(_ key: String) -> Bool {
+        inFlight.insert(key).inserted
+    }
+
+    func release(_ key: String) {
+        inFlight.remove(key)
+    }
+
     func get(_ key: String) -> ResumeSession? {
         let url = fileURL(key)
         guard let data = try? Data(contentsOf: url),

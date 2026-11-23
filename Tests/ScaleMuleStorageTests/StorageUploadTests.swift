@@ -16,6 +16,8 @@ final class FakeStorageServer: @unchecked Sendable {
     var totalParts = 3
     var partSize = 5 * 1024 * 1024
     var partURLsStatus = 200
+    /// Seconds each part PUT takes (to cancel mid-upload).
+    var partDelay: TimeInterval = 0
 
     func paths() -> [String] {
         lock.lock(); defer { lock.unlock() }
@@ -51,6 +53,7 @@ final class FakeStorageServer: @unchecked Sendable {
             let status: Int?
             lock.lock()
             if url.path.hasPrefix("/part/") {
+                if partDelay > 0 { lock.unlock(); Thread.sleep(forTimeInterval: partDelay); lock.lock() }
                 let part = Int(url.lastPathComponent)!
                 var script = partScript[part] ?? []
                 status = next(&script)
@@ -290,6 +293,60 @@ final class StorageUploadTests: XCTestCase {
         let result = await storage.upload(data, options: options(force: true))
         XCTAssertTrue(result.isSuccess)
         XCTAssertTrue(server.paths().contains("/v1/storage/signed-url/multipart/start"))
+    }
+
+    func testCancellingDuringPartsAbortsOnTheServer() async throws {
+        server.partDelay = 0.6
+        let storage = await storage()
+        let size = 2 * server.partSize + 1000
+        let task = Task { await storage.upload(Data(count: size), options: options(force: true)) }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        task.cancel()
+        let result = await task.value
+        XCTAssertEqual(result.error?.rawCode, "aborted")
+        XCTAssertTrue(server.paths().contains("/v1/storage/signed-url/multipart/abort"),
+                      "the abort must reach the server even though the upload's task was cancelled")
+    }
+
+    func testRateLimitDuringResumeCheckKeepsTheSession() async {
+        server.partScript = [2: [nil, nil, nil]]
+        let data = Data((0..<(2 * server.partSize + 1000)).map { UInt8($0 % 7) })
+        _ = await storage().upload(data, options: options(force: true))
+
+        server = FakeStorageServer()
+        server.install()
+        server.partURLsStatus = 429
+        let limited = await storage().upload(data, options: options(force: true))
+        XCTAssertEqual(limited.error?.statusCode, 429)
+        XCTAssertFalse(server.paths().contains("/v1/storage/signed-url/multipart/start"), "a rate limit is not a forgotten session")
+
+        server = FakeStorageServer()
+        server.install()
+        let resumed = await storage().upload(data, options: options(force: true))
+        XCTAssertTrue(resumed.isSuccess)
+        XCTAssertEqual(server.paths().filter { $0.hasPrefix("/part/") }, ["/part/2"], "still resumes after the rate limit")
+    }
+
+    func testTransparentPNGKeepsItsFormat() throws {
+        let context = CGContext(data: nil, width: 1600, height: 1600, bitsPerComponent: 8, bytesPerRow: 0,
+                                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        var seed: UInt32 = 7
+        for y in stride(from: 0, to: 1600, by: 4) {
+            for x in stride(from: 0, to: 800, by: 4) {
+                seed = seed &* 1_664_525 &+ 1_013_904_223
+                context.setFillColor(CGColor(red: CGFloat(seed >> 24) / 255, green: 0.4, blue: 0.6, alpha: 1))
+                context.fill(CGRect(x: x, y: y, width: 4, height: 4))
+            }
+        }
+        let output = NSMutableData()
+        let destination = CGImageDestinationCreateWithData(output, UTType.png.identifier as CFString, 1, nil)!
+        CGImageDestinationAddImage(destination, context.makeImage()!, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        let png = output as Data
+        XCTAssertGreaterThan(png.count, 100 * 1024)
+        if case .compressed = ImageCompression.compress(png, contentType: "image/png", filename: "logo.png", profile: .forNetwork(.threeG)) {
+            XCTFail("a transparent PNG must not become a JPEG")
+        }
     }
 
     func testCancelledMultipartIsAbortedOnTheServer() async {

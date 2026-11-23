@@ -198,10 +198,15 @@ public final class StorageService: ServiceModule, @unchecked Sendable {
             data: job.data
         )
 
+        // Two uploads of the same bytes at once must not share a session
+        // (the second start would rotate the first one's completion token).
+        let claimed = await resumeStore.claim(resumeKey)
+        defer { if claimed { let store = resumeStore; Task { await store.release(resumeKey) } } }
+
         // 1. Start, or pick up the session recorded on this device.
         var session: ResumeSession
         var urls: [Int: String] = [:]
-        if job.options.resume, allowResume, let saved = await resumeStore.get(resumeKey) {
+        if job.options.resume, allowResume, claimed, let saved = await resumeStore.get(resumeKey) {
             session = saved
             job.telemetry?.emit(job.sessionId, .resumed, fields([
                 "original_session_id": saved.uploadSessionId,
@@ -215,8 +220,9 @@ public final class StorageService: ServiceModule, @unchecked Sendable {
                 switch await fetchPartURLs(job, session: saved, parts: Array(firstPending)) {
                 case .success(let fresh):
                     urls = fresh
-                case .failure(let error) where (error.statusCode ?? 0) >= 400 && (error.statusCode ?? 0) < 500:
+                case .failure(let error) where Self.sessionGoneStatuses.contains(error.statusCode ?? 0):
                     await resumeStore.remove(resumeKey)
+                    await resumeStore.release(resumeKey)
                     return await uploadMultipart(job, allowResume: false)
                 case .failure(let error):
                     return .failure(error)
@@ -225,7 +231,7 @@ public final class StorageService: ServiceModule, @unchecked Sendable {
         } else {
             var body = job.baseBody
             body["size_bytes"] = job.data.count
-            body["client_upload_key"] = resumeKey
+            if job.options.resume && claimed { body["client_upload_key"] = resumeKey }
             if let chunk = job.options.chunkSize { body["chunk_size"] = chunk } else { body["chunk_size"] = job.plan.chunkSize }
             let start: ApiResponse<MultipartStartResponse> = await client.request(job.request("/v1/storage/signed-url/multipart/start", body: body))
             guard case .success(let started) = start else {
@@ -242,7 +248,7 @@ public final class StorageService: ServiceModule, @unchecked Sendable {
                 createdAt: Date()
             )
             for part in started.partUrls { urls[part.partNumber] = part.url }
-            if job.options.resume {
+            if job.options.resume && claimed {
                 do { try await resumeStore.save(resumeKey, session) } catch {
                     job.telemetry?.emit(job.sessionId, .retried, fields(["step": "resume_save", "error": error.localizedDescription]))
                 }
@@ -258,6 +264,7 @@ public final class StorageService: ServiceModule, @unchecked Sendable {
         )
         tracker.report()
         var milestone = 0
+        let partsStarted = Date()
         var failure: (part: Int, failure: S3Failure)?
         var next = 0
 
@@ -272,6 +279,10 @@ public final class StorageService: ServiceModule, @unchecked Sendable {
                         switch await fetchPartURLs(job, session: session, parts: Array(wanted)) {
                         case .success(let fresh):
                             urls.merge(fresh) { $1 }
+                        case .failure(let error) where Self.sessionGoneStatuses.contains(error.statusCode ?? 0):
+                            failure = (part, S3Failure(code: .sessionExpired, status: error.statusCode,
+                                                       body: "Part links: \(error.message)", attempts: 1))
+                            return
                         case .failure(let error):
                             // Keeps the session: the next try resumes here.
                             let offline = error.code == .networkError || error.code == .timeout
@@ -302,7 +313,7 @@ public final class StorageService: ServiceModule, @unchecked Sendable {
                 case .done(let part, let etag):
                     session.completedParts[part] = etag
                     job.telemetry?.emit(job.sessionId, .multipartPartCompleted, fields(["part_number": part]))
-                    if job.options.resume {
+                    if job.options.resume && claimed {
                         try? await resumeStore.recordPart(resumeKey, partNumber: part, etag: etag)
                     }
                     let percent = session.completedParts.count * 100 / max(session.totalParts, 1)
@@ -342,12 +353,16 @@ public final class StorageService: ServiceModule, @unchecked Sendable {
             // A request S3 refused for good cannot be continued; anything
             // else (lost connection, stall, server error) keeps the session
             // so the next try sends only the missing parts.
-            if S3Transfer.isFatal(failure.failure) && !failure.failure.refreshable {
+            if failure.failure.code == .sessionExpired || (S3Transfer.isFatal(failure.failure) && !failure.failure.refreshable) {
                 await abort(job, session: session)
                 await resumeStore.remove(resumeKey)
             }
             return .failure(Self.error(for: failure.failure))
         }
+
+        // The connection's speed, measured over all parts together.
+        let sentThisRun = pending.reduce(0) { $0 + partRange($1, session: session, size: job.data.count).count }
+        conditions.recordUpload(bytes: sentThisRun, seconds: Date().timeIntervalSince(partsStarted))
 
         // 3. Complete.
         let parts = session.completedParts.sorted { $0.key < $1.key }.map { ["part_number": $0.key, "etag": $0.value] }
@@ -426,12 +441,16 @@ public final class StorageService: ServiceModule, @unchecked Sendable {
         }
     }
 
+    /// Sent from a detached task: in a cancelled task URLSession refuses to
+    /// send anything, so the server would never hear of it.
     private func abort(_ job: Job, session: ResumeSession) async {
-        _ = await client.requestVoid(job.request(
+        let client = client
+        let request = job.request(
             "/v1/storage/signed-url/multipart/abort",
             body: ["upload_session_id": session.uploadSessionId, "completion_token": session.completionToken],
             retryable: false
-        ))
+        )
+        _ = await Task.detached { await client.requestVoid(request) }.value
     }
 
     private func partRange(_ part: Int, session: ResumeSession, size: Int) -> Range<Int> {
@@ -472,7 +491,9 @@ public final class StorageService: ServiceModule, @unchecked Sendable {
         ]
         if let status { body["http_status"] = status }
         if let attempt { body["attempt"] = attempt }
-        _ = await client.requestVoid(job.request("/v1/storage/signed-url/report-failure", body: body, retryable: false))
+        let client = client
+        let request = job.request("/v1/storage/signed-url/report-failure", body: body, retryable: false)
+        _ = await Task.detached { await client.requestVoid(request) }.value
     }
 
     // MARK: - Helpers
@@ -485,6 +506,10 @@ public final class StorageService: ServiceModule, @unchecked Sendable {
         }
     }
 
+    /// Part-links answers that mean the server no longer has the session
+    /// (expired, finished, someone else's). 401/429 and the like do not.
+    static let sessionGoneStatuses: Set<Int> = [403, 404, 409, 410]
+
     static let cancelledError = ApiError(code: .networkError, message: "Upload cancelled", rawCode: "aborted")
 
     static func error(for failure: S3Failure) -> ApiError {
@@ -495,6 +520,8 @@ public final class StorageService: ServiceModule, @unchecked Sendable {
             return ApiError(code: .networkError, message: "The connection dropped during the upload", rawCode: failure.code.rawValue)
         case .stalled:
             return ApiError(code: .timeout, message: "The upload stopped moving", rawCode: failure.code.rawValue)
+        case .sessionExpired:
+            return ApiError(code: .conflict, message: "The upload took too long and expired. Try again.", statusCode: 409, rawCode: failure.code.rawValue)
         default:
             // S3 itself refused or failed: a fault on our side, not the person's.
             return ApiError(code: .internalError, message: "Upload failed: \(failure.message)", statusCode: 502, rawCode: failure.code.rawValue)
