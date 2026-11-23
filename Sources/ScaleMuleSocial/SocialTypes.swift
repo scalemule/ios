@@ -28,6 +28,9 @@ public struct SocialPost: Sendable, Decodable, Identifiable, Equatable {
     /// Where the post was, as its author chose to share it.
     public let location: SharedLocation?
     public let likesCount: Int
+    /// Whether the signed-in person liked it (`likesCount` already counts
+    /// that like); nil when the server did not say.
+    public let likedByMe: Bool?
     public let commentsCount: Int
     public let sharesCount: Int
     /// ISO 8601 timestamp.
@@ -41,6 +44,7 @@ public struct SocialPost: Sendable, Decodable, Identifiable, Equatable {
         case mediaIds = "media_ids"
         case visibility, tags, metadata, location
         case likesCount = "likes_count"
+        case likedByMe = "liked_by_me"
         case commentsCount = "comments_count"
         case sharesCount = "shares_count"
         case createdAt = "created_at"
@@ -59,6 +63,7 @@ public struct SocialPost: Sendable, Decodable, Identifiable, Equatable {
         metadata = try c.decodeIfPresent([String: AnyCodable].self, forKey: .metadata)
         location = try? c.decodeIfPresent(SharedLocation.self, forKey: .location)
         likesCount = try c.decodeIfPresent(Int.self, forKey: .likesCount) ?? 0
+        likedByMe = try? c.decodeIfPresent(Bool.self, forKey: .likedByMe)
         commentsCount = try c.decodeIfPresent(Int.self, forKey: .commentsCount) ?? 0
         sharesCount = try c.decodeIfPresent(Int.self, forKey: .sharesCount) ?? 0
         createdAt = try c.decode(String.self, forKey: .createdAt)
