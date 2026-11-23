@@ -78,6 +78,66 @@ final class SocialServiceTests: XCTestCase {
         XCTAssertEqual(calls, 1)
     }
 
+    func testCreatePostSendsTheChosenLocation() async {
+        let (_, social) = await signedIn()
+        MockURLProtocol.requestHandler = { request in
+            let body = self.bodyJSON(request)!
+            let location = body["location"] as? [String: Any]
+            XCTAssertEqual(location?["precision"] as? String, "place")
+            XCTAssertEqual(location?["place_id"] as? String, "I63802885C8189B2B")
+            XCTAssertEqual(location?["name"] as? String, "SFMOMA")
+            XCTAssertEqual(location?["country_code"] as? String, "US")
+            XCTAssertNil((body["metadata"] as? [String: Any])?["lat"])
+            return TestFixtures.envelopedResponse(json: Self.postJSON)
+        }
+        let museum = SharedLocation(precision: .place, latitude: 37.7857, longitude: -122.4011,
+                                    name: "SFMOMA", locality: "San Francisco", countryCode: "US",
+                                    placeId: "I63802885C8189B2B")
+        _ = assertApiSuccess(await social.createPost(content: "Rothko", metadata: ["kind": "photo"], location: museum))
+    }
+
+    func testPostsNearPostsTheSpotInTheBodyAndDecodesThePage() async {
+        let (_, social) = await signedIn()
+        let located = Self.postJSON.replacingOccurrences(
+            of: "\"likes_count\": 2,",
+            with: "\"likes_count\": 2, \"distance_km\": 1.4, \"location\": {\"precision\": \"city\", \"latitude\": 37.78, \"longitude\": -122.42, \"name\": \"Сан-Франциско 旧金山 🌉\"},"
+        )
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.path, "/v1/social/posts/near")
+            XCTAssertNil(request.url?.query, "no position in the URL")
+            let body = self.bodyJSON(request)!
+            XCTAssertEqual(body["latitude"] as? Double, 37.8044)
+            XCTAssertEqual(body["radius_km"] as? Double, 25)
+            XCTAssertEqual(body["cursor"] as? String, "c1")
+            return TestFixtures.envelopedResponse(json: "{\"posts\": [\(located)], \"radius_km\": 25, \"next_cursor\": \"c2\"}")
+        }
+        let page = assertApiSuccess(await social.postsNear(latitude: 37.8044, longitude: -122.2712, radiusKm: 25, cursor: "c1"))
+        XCTAssertEqual(page?.radiusKm, 25)
+        XCTAssertEqual(page?.nextCursor, "c2")
+        XCTAssertEqual(page?.posts.first?.distanceKm, 1.4)
+        XCTAssertEqual(page?.posts.first?.post.location?.label, "Сан-Франциско 旧金山 🌉")
+        XCTAssertEqual(page?.posts.first?.post.content, "Ocean Beach")
+    }
+
+    func testNotHereIsRecognised() async {
+        let (_, social) = await signedIn()
+        MockURLProtocol.requestHandler = { _ in
+            TestFixtures.mockResponse(statusCode: 403, json: "{\"success\": false, \"error\": {\"code\": \"LOCATION_NOT_HERE\", \"message\": \"Posts nearby follow where you are.\"}}")
+        }
+        let error = assertApiFailure(await social.postsAtPlace(placeId: "x", latitude: 51.5, longitude: -0.12))
+        XCTAssertEqual(error?.isLocationNotHere, true)
+    }
+
+    func testOldPostsWithoutLocationStillDecode() async {
+        let (_, social) = await signedIn()
+        MockURLProtocol.requestHandler = { _ in
+            TestFixtures.envelopedResponse(json: "{\"posts\": [\(Self.postJSON)]}")
+        }
+        let posts = assertApiSuccess(await social.feed())
+        XCTAssertNil(posts?.first?.location)
+    }
+
     func testLikeUsesTargetPath() async {
         let (_, social) = await signedIn()
         MockURLProtocol.requestHandler = { request in

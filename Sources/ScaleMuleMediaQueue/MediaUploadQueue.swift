@@ -78,6 +78,9 @@ public final class MediaUploadQueue: ObservableObject {
         var mediaId: String?
         var needsOriginal: Bool?
         var published: Bool?
+        /// Where and when it was taken: written into the uploaded file only,
+        /// for the platform to keep privately.
+        var capture: CaptureLocation?
     }
 
     public typealias Publish = @MainActor (MediaUpload) async -> Result<Void, PublishError>
@@ -147,14 +150,20 @@ public final class MediaUploadQueue: ObservableObject {
     // MARK: - Posting
 
     /// Post a photo (full resolution: the queue decides what to send).
-    public func post(photo image: UIImage, attributes: [String: String] = [:]) {
+    ///
+    /// `capture` is where and when it was taken. It goes into the uploaded
+    /// JPEG only; ScaleMule Photos keeps it privately and serves copies
+    /// without it. What the post shows is its separate public location.
+    public func post(photo image: UIImage, attributes: [String: String] = [:], capture: CaptureLocation? = nil) {
         let id = UUID()
-        let record = Record(id: id, kind: .photo, attributes: attributes, createdAt: Date(), filename: "photo-\(Int(Date().timeIntervalSince1970)).jpg")
+        var record = Record(id: id, kind: .photo, attributes: attributes, createdAt: Date(), filename: "photo-\(Int(Date().timeIntervalSince1970)).jpg")
+        record.capture = capture
         jobs.insert(Job(id: id, kind: .photo, thumbnail: Self.resized(image, maxSide: 160), attributes: attributes, record: record), at: 0)
         let folder = folder, quality = originalQuality, side = previewMaxSide
         Task {
             let preview = await Task.detached(priority: .userInitiated) { () -> UIImage? in
-                guard let jpeg = image.jpegData(compressionQuality: quality) else { return nil }
+                guard var jpeg = image.jpegData(compressionQuality: quality) else { return nil }
+                if let capture { jpeg = CaptureMetadata.jpeg(jpeg, adding: capture) }
                 do {
                     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
                     try jpeg.write(to: folder.appendingPathComponent("\(id.uuidString).jpg"), options: .atomic)
@@ -175,10 +184,12 @@ public final class MediaUploadQueue: ObservableObject {
         }
     }
 
-    /// Post a video: the take's clips (the queue takes the files over) and the edit.
-    public func post(video edit: VideoEdit, attributes: [String: String] = [:]) {
+    /// Post a video: the take's clips (the queue takes the files over) and the
+    /// edit. `capture` is kept privately by ScaleMule Video, as for photos.
+    public func post(video edit: VideoEdit, attributes: [String: String] = [:], capture: CaptureLocation? = nil) {
         let id = UUID()
         var record = Record(id: id, kind: .video, attributes: attributes, createdAt: Date(), filename: "video-\(Int(Date().timeIntervalSince1970)).mp4")
+        record.capture = capture
         jobs.insert(Job(id: id, kind: .video, thumbnail: Self.placeholder, attributes: attributes, record: record), at: 0)
         var kept = edit
         kept.clips = []
@@ -328,7 +339,7 @@ public final class MediaUploadQueue: ObservableObject {
             var edit = record.edit ?? VideoEdit(clips: [])
             edit.clips = clips
             do {
-                let prepared = try await VideoComposer.export(edit, maxSeconds: maxVideoSeconds)
+                let prepared = try await VideoComposer.export(edit, maxSeconds: maxVideoSeconds, location: record.capture)
                 try? FileManager.default.removeItem(at: videoURL(record.id))
                 try FileManager.default.moveItem(at: prepared.file, to: videoURL(record.id))
                 try prepared.poster.jpegData(compressionQuality: 0.85)?.write(to: jpegURL(record.id), options: .atomic)
