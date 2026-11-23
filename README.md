@@ -35,6 +35,9 @@ Or in Xcode: File > Add Package Dependencies > enter `https://github.com/scalemu
 | `ScaleMuleStorage` | Uploads straight to S3: sized to the connection, multipart, retried, resumable |
 | `ScaleMulePhotos` | Photo upload (checked for unsafe content) and sized images |
 | `ScaleMuleVideos` | Short videos: resumable upload, adaptive streaming (HLS) playback links |
+| `ScaleMuleCapture` | Camera for capture screens: photos, multi-clip video takes, zoom/focus/flash, preview (iOS 17+) |
+| `ScaleMuleMediaEditing` | Photo looks and adjustments; video composer (join clips, trim, look, mute, export, poster); watermark and save to Photos |
+| `ScaleMuleMediaQueue` | Durable background posting: survives app restarts, resumable uploads, originals on Wi-Fi; your app publishes |
 | `ScaleMuleSafety` | Versioned consent (Terms, Privacy, licences), reporting content, blocking people, support messages |
 
 ## Quick Start
@@ -181,6 +184,40 @@ Mode), and otherwise post `.adaptive` now and later, on Wi-Fi, call
 `photos.attachOriginal(photoId:_:filename:)`. The original becomes the
 photo's source (every size is made from it); the server accepts only the
 uploader and the same picture, at least as large.
+
+## Posting photos and videos (Instagram/TikTok style)
+
+The media modules give any ScaleMule app the full posting flow; the app
+draws its own screens and decides what a post is.
+
+```swift
+// Capture: photos, and video takes of several clips (hold, release, hold again).
+let camera = CaptureController(maxVideoSeconds: 60)
+CapturePreview(controller: camera)              // SwiftUI; tap focuses, pinch zooms
+try await camera.capturePhoto()                 // -> camera.capturedImage
+camera.startClip(); camera.stopClip()           // per press; camera.clips, recordedSeconds
+let clips = camera.finishTake()                 // or deleteLastClip(), discardTake()
+
+// Edit: the same looks for photos and every video frame.
+var edit = VideoEdit(clips: clips, trimStart: 0.5, trimEnd: 12, look: .vivid, muted: false)
+let preview = try await VideoComposer.preview(for: edit)        // looping.load(preview.item, timeRange: preview.timeRange)
+
+// Post in the background; the queue keeps it on the phone until published.
+let queue = MediaUploadQueue(photos: photos, videos: videos) { upload in
+    // Your app's post, for example a Social post with upload.mediaId.
+    let result = await social.createPost(content: upload.attributes["caption"] ?? "", mediaIds: [upload.mediaId])
+    return result.isSuccess ? .success(()) : .failure(.init(result.error?.userFacingMessage ?? "Could not post"))
+}
+queue.restore()                                  // once signed in: carries on after a relaunch
+queue.post(video: edit, attributes: ["caption": "Ocean Beach"])
+queue.post(photo: image, attributes: [:])        // originals follow on Wi-Fi automatically
+
+// Show: photos (cached on disk, waits out the safety check) and videos.
+let image = await photos.loadImage(id: photoId, width: 1080, cache: .shared)
+let model = VideoPlaybackModel(videoId: videoId, videos: videos)   // poster, waits for conversion
+PlayerLayerView(player: model.player, gravity: .resizeAspectFill)
+model.play(); model.togglePause(); model.isMuted = true
+```
 
 ## Auth Credential Model
 

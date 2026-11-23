@@ -6,4 +6,7 @@
 @_exported import ScaleMuleStorage
 @_exported import ScaleMulePhotos
 @_exported import ScaleMuleVideos
+@_exported import ScaleMuleCapture
+@_exported import ScaleMuleMediaEditing
+@_exported import ScaleMuleMediaQueue
 @_exported import ScaleMuleSafety
