@@ -144,7 +144,7 @@ public final class VideoPlaybackModel: ObservableObject {
     public var player: AVPlayer { looping.player }
 
     private let videos: VideosService
-    private let looping = LoopingPlayer()
+    private var looping = LoopingPlayer()
     private var startTask: Task<Void, Never>?
     private static let posters = NSCache<NSString, UIImage>()
 
@@ -227,6 +227,15 @@ public final class VideoPlaybackModel: ObservableObject {
             play(file: local)
             return
         }
+        // Buffered while the previous post was on screen: starts at once.
+        if let ready = VideoPreloader.shared.take(videoId) {
+            objectWillChange.send()
+            looping = ready
+            looping.player.isMuted = isMuted
+            looping.player.play()
+            phase = .playing
+            return
+        }
         phase = .loading
         for _ in 0..<36 {
             if Task.isCancelled { return }
@@ -253,6 +262,81 @@ public final class VideoPlaybackModel: ObservableObject {
             try? await Task.sleep(nanoseconds: 5_000_000_000)
         }
         if !Task.isCancelled { phase = .failed }
+    }
+}
+/// Buffers the next videos of a feed while the current one plays, so a
+/// swipe starts the next video at once (TikTok preloads the same way). Each
+/// is a muted, paused player that `VideoPlaybackModel` takes over; at most
+/// `capacity` are kept, the furthest dropped first, and all go on a memory
+/// warning.
+@MainActor
+public final class VideoPreloader {
+    public static let shared = VideoPreloader()
+
+    /// Players kept buffered (each holds a few seconds of video).
+    public var capacity = 2
+    private var ready: [(id: String, player: LoopingPlayer)] = []
+    private var tasks: [String: Task<Void, Never>] = [:]
+    private var memoryWarning: NSObjectProtocol?
+
+    public init() {
+        memoryWarning = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.clear() }
+        }
+    }
+
+    /// Keep these videos buffered, nearest first; others are released.
+    public func preload(_ videoIds: [String], videos: VideosService) {
+        let wanted = Array(videoIds.prefix(capacity))
+        for (id, task) in tasks where !wanted.contains(id) {
+            task.cancel()
+            tasks.removeValue(forKey: id)
+        }
+        for entry in ready where !wanted.contains(entry.id) { entry.player.stop() }
+        ready.removeAll { !wanted.contains($0.id) }
+        for id in wanted where tasks[id] == nil && !ready.contains(where: { $0.id == id }) {
+            guard VideoFileCache.file(for: id) == nil else { continue }
+            tasks[id] = Task { [weak self] in
+                guard case .success(let info) = await videos.get(id: id), info.isReady,
+                      let url = await VideoLinkCache.shared.url(for: id, videos: videos),
+                      !Task.isCancelled else {
+                    self?.tasks.removeValue(forKey: id)
+                    return
+                }
+                self?.buffer(id, url: url)
+            }
+        }
+    }
+
+    /// The buffered player for `videoId`, handed over (no longer kept here).
+    public func take(_ videoId: String) -> LoopingPlayer? {
+        guard let index = ready.firstIndex(where: { $0.id == videoId }) else { return nil }
+        return ready.remove(at: index).player
+    }
+
+    /// Videos buffered right now (for tests and diagnostics).
+    public var bufferedIds: [String] { ready.map(\.id) }
+
+    public func clear() {
+        for task in tasks.values { task.cancel() }
+        tasks.removeAll()
+        for entry in ready { entry.player.stop() }
+        ready.removeAll()
+    }
+
+    func buffer(_ id: String, url: URL) {
+        tasks.removeValue(forKey: id)
+        let looping = LoopingPlayer()
+        looping.player.isMuted = true
+        looping.player.automaticallyWaitsToMinimizeStalling = true
+        let item = AVPlayerItem(url: url)
+        item.preferredForwardBufferDuration = 4
+        looping.load(item)
+        looping.player.pause()
+        ready.append((id, looping))
+        while ready.count > capacity { ready.removeFirst().player.stop() }
     }
 }
 #endif

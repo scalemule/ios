@@ -10,4 +10,5 @@
 @_exported import ScaleMuleMediaEditing
 @_exported import ScaleMuleMediaQueue
 @_exported import ScaleMuleLocation
+@_exported import ScaleMuleFeed
 @_exported import ScaleMuleSafety
