@@ -72,4 +72,10 @@ final class VideosServiceTests: XCTestCase {
         XCTAssertEqual(info?.height, 1920)
         XCTAssertEqual(info?.thumbnailUrl, "https://cdn.test/t.jpg")
     }
+
+    @MainActor
+    func testSoundOnIsHeardOnSilentAndMutedLeavesOtherAudio() {
+        XCTAssertEqual(VideoPlaybackModel.audioCategory(muted: false), .playback)
+        XCTAssertEqual(VideoPlaybackModel.audioCategory(muted: true), .ambient)
+    }
 }
