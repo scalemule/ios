@@ -73,7 +73,60 @@ final class VideosServiceTests: XCTestCase {
         XCTAssertEqual(info?.thumbnailUrl, "https://cdn.test/t.jpg")
     }
 
+    func testDeleteAsksVideoToDeleteEveryCopy() async {
+        let videos = await signedIn()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.httpMethod, "DELETE")
+            XCTAssertEqual(request.url?.path, "/v1/videos/vid-1")
+            // Video answers without the usual envelope.
+            return TestFixtures.mockResponse(statusCode: 200, json: #"{"video_id":"vid-1","deleted":true,"objects_deleted":7,"storage_original":"deleted","cdn_invalidation":"requested","processing_cancelled":false}"#)
+        }
+        let deletion = assertApiSuccess(await videos.delete(id: "vid-1"))
+        XCTAssertEqual(deletion?.videoId, "vid-1")
+        XCTAssertEqual(deletion?.deleted, true)
+        XCTAssertEqual(deletion?.objectsDeleted, 7)
+        XCTAssertEqual(deletion?.storageOriginal, "deleted")
+        XCTAssertEqual(deletion?.cdnInvalidation, "requested")
+        XCTAssertEqual(deletion?.processingCancelled, false)
+    }
+
+    func testDeletingAVideoAlreadyGoneIsA404() async {
+        let videos = await signedIn()
+        MockURLProtocol.requestHandler = { _ in
+            TestFixtures.mockResponse(statusCode: 404, json: #"{"success":false,"error":{"message":"Video not found"}}"#)
+        }
+        let result = await videos.delete(id: "видео 🎬/1")
+        XCTAssertEqual(result.error?.statusCode, 404)
+    }
+
     #if canImport(UIKit)
+    @MainActor
+    func testDeleteForgetsThisPhonesCopies() async throws {
+        let videos = await signedIn()
+        let id = "vid-\(UUID().uuidString)"
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).mp4")
+        try Data(repeating: 7, count: 64).write(to: file)
+        VideoFileCache.keep(file, for: id)
+        XCTAssertNotNil(VideoFileCache.file(for: id))
+        MockURLProtocol.requestHandler = { request in
+            if request.url?.path.hasSuffix("/embed-token") == true {
+                return TestFixtures.mockResponse(statusCode: 200, json: #"{"success":true,"data":{"token":"tok","expires_at":1}}"#)
+            }
+            return TestFixtures.mockResponse(statusCode: 200, json: #"{"video_id":"x","deleted":true}"#)
+        }
+        _ = await VideoLinkCache.shared.url(for: id, videos: videos)
+        XCTAssertNotNil(VideoLinkCache.shared.cachedURL(for: id))
+        VideoPreloader.shared.buffer(id, url: file)
+        XCTAssertTrue(VideoPreloader.shared.bufferedIds.contains(id))
+
+        _ = assertApiSuccess(await videos.delete(id: id))
+
+        XCTAssertNil(VideoFileCache.file(for: id), "the file kept after posting")
+        XCTAssertNil(VideoLinkCache.shared.cachedURL(for: id), "the playback link")
+        XCTAssertFalse(VideoPreloader.shared.bufferedIds.contains(id), "the buffered player")
+        try? FileManager.default.removeItem(at: file)
+    }
+
     // VideoPlaybackModel is iOS only; `swift test` on macOS builds without it.
     @MainActor
     func testSoundOnIsHeardOnSilentAndMutedLeavesOtherAudio() {

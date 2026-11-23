@@ -538,6 +538,62 @@ final class SocialFeedModelTests: XCTestCase {
         XCTAssertTrue(model.items.isEmpty)
         XCTAssertTrue(server.requests.contains("DELETE /v1/social/posts/own"))
         XCTAssertTrue(server.requests.contains("DELETE /v1/photos/m-own"))
+        XCTAssertFalse(server.requests.contains { $0.hasPrefix("DELETE /v1/videos") }, "a photo post deletes no video")
+    }
+
+    private static let videoPost = #"{"posts":[\#(postJSON(id: "clip", user: "u1", media: "vid-9", metadata: #"{"kind":"video","author_name":"Maya","width":1080,"height":1920,"duration":8}"#))]}"#
+
+    func testDeletesYourOwnVideoPostAndItsVideoEverywhere() async {
+        server.start { request in
+            switch (request.httpMethod ?? "", request.url!.path) {
+            case ("GET", _): return ok(Self.videoPost)
+            case ("DELETE", "/v1/videos/vid-9"):
+                return TestFixtures.mockResponse(statusCode: 200, json: #"{"video_id":"vid-9","deleted":true}"#)
+            default: return emptyOK
+            }
+        }
+        let model = await model()
+        await model.loadFeed()
+        XCTAssertEqual(model.items.first?.isVideo, true)
+        await model.deleteOwnPost(model.items[0])
+        XCTAssertTrue(model.items.isEmpty)
+        XCTAssertNil(model.error)
+        let deletes = server.requests.filter { $0.hasPrefix("DELETE") }
+        XCTAssertEqual(deletes, ["DELETE /v1/videos/vid-9", "DELETE /v1/social/posts/clip"], "the video first, then the post; no photo")
+    }
+
+    func testAVideoAlreadyGoneStillDeletesThePost() async {
+        server.start { request in
+            switch (request.httpMethod ?? "", request.url!.path) {
+            case ("GET", _): return ok(Self.videoPost)
+            case ("DELETE", "/v1/videos/vid-9"):
+                return TestFixtures.mockResponse(statusCode: 404, json: #"{"success":false,"error":{"message":"Video not found"}}"#)
+            default: return emptyOK
+            }
+        }
+        let model = await model()
+        await model.loadFeed()
+        await model.deleteOwnPost(model.items[0])
+        XCTAssertTrue(model.items.isEmpty)
+        XCTAssertNil(model.error)
+        XCTAssertTrue(server.requests.contains("DELETE /v1/social/posts/clip"))
+    }
+
+    func testAVideoThatCouldNotBeDeletedKeepsItsPost() async {
+        server.start { request in
+            switch (request.httpMethod ?? "", request.url!.path) {
+            case ("GET", _): return ok(Self.videoPost)
+            case ("DELETE", "/v1/videos/vid-9"):
+                return TestFixtures.mockResponse(statusCode: 403, json: #"{"success":false,"error":{"code":"FORBIDDEN","message":"Not allowed"}}"#)
+            default: return emptyOK
+            }
+        }
+        let model = await model()
+        await model.loadFeed()
+        await model.deleteOwnPost(model.items[0])
+        XCTAssertEqual(model.items.map(\.id), ["clip"], "kept, so deleting again finishes the job")
+        XCTAssertNotNil(model.error)
+        XCTAssertFalse(server.requests.contains("DELETE /v1/social/posts/clip"))
     }
 
     func testInsertsYourNewPostAtTheTop() async throws {

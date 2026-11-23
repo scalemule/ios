@@ -5,6 +5,7 @@ import os.log
 import ScaleMuleCore
 import ScaleMulePhotos
 import ScaleMuleSocial
+import ScaleMuleVideos
 #if os(iOS)
 import ScaleMuleLocation
 #endif
@@ -91,6 +92,7 @@ public final class SocialFeedModel: ObservableObject {
     private let logger = Logger(subsystem: "com.scalemule.ios", category: "SocialFeedModel")
     private var social: SocialService?
     private var photos: PhotosService?
+    private var videos: VideosService?
     private var currentUserId: String?
     private var hiddenPostIds: Set<String> = []
     private var blockedAuthorIds: Set<String> = []
@@ -136,10 +138,12 @@ public final class SocialFeedModel: ObservableObject {
     #endif
 
     /// Connect to the signed-in person's services. Shows the saved first
-    /// page at once when the list is still empty.
-    public func attach(social: SocialService, photos: PhotosService, currentUserId: String?) {
+    /// page at once when the list is still empty. `videos` deletes the video
+    /// of a video post (default: a `VideosService` on the photos' client).
+    public func attach(social: SocialService, photos: PhotosService, videos: VideosService? = nil, currentUserId: String?) {
         self.social = social
         self.photos = photos
+        self.videos = videos ?? VideosService(client: photos.client)
         self.currentUserId = currentUserId
         if analytics == nil { analytics = AnalyticsEvents(client: social.client) }
         #if os(iOS)
@@ -364,10 +368,22 @@ public final class SocialFeedModel: ObservableObject {
         }
     }
 
-    /// Delete one of the person's own posts, then its photo. (ScaleMule
-    /// Video has no delete yet: a video post's video stays, unlisted.)
+    /// Delete one of the person's own posts with what it shows.
+    ///
+    /// - A video post: the video first, everywhere (ScaleMule Video removes
+    ///   every stored copy; this phone's copies go too), then the post. A
+    ///   video already gone (404) counts as deleted; any other failure keeps
+    ///   the post and sets `error`, so deleting again finishes the job.
+    /// - A photo post: the post, then its photo.
     public func deleteOwnPost(_ post: MediaPost) async {
         guard post.isMine, let social else { return }
+        if post.isVideo, let videos {
+            if case .failure(let apiError) = await videos.delete(id: post.mediaId), apiError.statusCode != 404 {
+                logger.error("Video delete failed: \(apiError.message, privacy: .public)")
+                error = FeedError(message: apiError.userFacingMessage)
+                return
+            }
+        }
         switch await social.deletePost(id: post.id) {
         case .success:
             items.removeAll { $0.id == post.id }

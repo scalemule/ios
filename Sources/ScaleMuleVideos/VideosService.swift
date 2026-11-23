@@ -66,6 +66,34 @@ public final class VideosService: ServiceModule, @unchecked Sendable {
         ))
     }
 
+    /// Delete the video everywhere: ScaleMule Video removes its streaming
+    /// copies, poster and preview, the uploaded original in Storage, its
+    /// playback statistics and CDN copies. Only the video's owner (or the
+    /// app's team) may; anyone else, and a video already deleted, gets a 404
+    /// (`error.statusCode == 404`). This phone's copies go too, whatever the
+    /// answer: the file kept after posting, the playback link, a buffered
+    /// player and the poster.
+    public func delete(id: String) async -> ApiResponse<VideoDeletion> {
+        let result: ApiResponse<VideoDeletion> = await client.request(RequestOptions(
+            method: .delete,
+            path: "/v1/videos/\(Self.segment(id))",
+            credential: .accessToken
+        ))
+        await Self.forgetLocalCopies(of: id)
+        return result
+    }
+
+    /// Drop what this phone keeps of one video.
+    @MainActor
+    public static func forgetLocalCopies(of id: String) {
+        #if canImport(UIKit)
+        VideoFileCache.remove(id)
+        VideoLinkCache.shared.forget(id)
+        VideoPreloader.shared.forget(id)
+        VideoPlaybackModel.forgetPoster(id)
+        #endif
+    }
+
     /// A link AVPlayer can play directly: the HLS master playlist with a
     /// short-lived playback token (no headers needed; every quality playlist
     /// carries it). Ask for a new one when it expires.
@@ -126,6 +154,29 @@ public struct RegisteredVideo: Sendable, Decodable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case videoId = "video_id"
         case status
+    }
+}
+
+/// What `DELETE /v1/videos/{id}` answers.
+public struct VideoDeletion: Sendable, Decodable, Equatable {
+    public let videoId: String
+    public let deleted: Bool
+    /// Objects removed from the video bucket (streaming copies, poster, preview).
+    public let objectsDeleted: Int?
+    /// `deleted`, `not_in_storage` or `kept_other_uploader`.
+    public let storageOriginal: String?
+    /// `requested` or `not_configured`.
+    public let cdnInvalidation: String?
+    /// The video was still being converted; Video finishes the cleanup within minutes.
+    public let processingCancelled: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case deleted
+        case videoId = "video_id"
+        case objectsDeleted = "objects_deleted"
+        case storageOriginal = "storage_original"
+        case cdnInvalidation = "cdn_invalidation"
+        case processingCancelled = "processing_cancelled"
     }
 }
 

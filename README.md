@@ -382,7 +382,7 @@ queue.post(video: edit, attributes: MediaPostAttributes.make(caption: "Ocean Bea
 
 // 4. The feed model: everyone's posts, yours, or nearby.
 @StateObject var feed = SocialFeedModel()                               // pageSize 20, polls every 15 s
-feed.attach(social: social, photos: photos, currentUserId: user.id)     // opens on the saved first page
+feed.attach(social: social, photos: photos, videos: videos, currentUserId: user.id) // opens on the saved first page
 await feed.loadFeed()
 feed.filter = .nearby                                                   // or .mine / .everyone
 feed.startPolling()                                                     // feed.newItems → feed.showNewItems()
@@ -436,8 +436,13 @@ let avatarURL = post.isMine ? user.avatarURL : await people.profile(post.authorI
 - `RemoteVideoView` plays while `isActive`, pauses on tap and remembers the
   mute button (`muteKey`). Both views are neutral (white on black); text is
   in `labels`. `ProfileAvatarView` takes your colours and font.
-- ScaleMule Video has no delete yet: `deleteOwnPost` deletes a video post but
-  not its video.
+- `deleteOwnPost` on a video post deletes the video first with
+  `VideosService.delete(id:)` (Video removes every stored copy: streaming
+  copies, poster, preview, the Storage original, statistics, CDN copies;
+  this phone's file, playback link, buffered player and poster go too), then
+  the post. A video already gone (404) counts as deleted; any other failure
+  keeps the post and sets `error`, so deleting again finishes the job. A photo
+  post deletes the post, then the photo.
 
 ## Usage analytics for photos and videos
 
