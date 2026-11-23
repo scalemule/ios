@@ -88,6 +88,11 @@ public enum VideoFileCache {
         return FileManager.default.fileExists(atPath: target.path) ? target : nil
     }
 
+    /// Delete the kept file (the video was deleted).
+    public static func remove(_ videoId: String) {
+        try? FileManager.default.removeItem(at: url(videoId))
+    }
+
     private static func url(_ videoId: String) -> URL {
         let safe = videoId.filter { $0.isLetter || $0.isNumber || $0 == "-" }
         return folder.appendingPathComponent(safe).appendingPathExtension("mp4")
@@ -117,6 +122,16 @@ public final class VideoLinkCache {
         guard case .success(let url) = await videos.playbackURL(id: videoId, validFor: 3600) else { return nil }
         links[videoId] = (url, Date().addingTimeInterval(50 * 60))
         return url
+    }
+
+    /// Drop the link (the video was deleted).
+    public func forget(_ videoId: String) {
+        links.removeValue(forKey: videoId)
+    }
+
+    /// The kept link, if any (tests and diagnostics).
+    public func cachedURL(for videoId: String) -> URL? {
+        links[videoId]?.url
     }
 }
 
@@ -156,6 +171,11 @@ public final class VideoPlaybackModel: ObservableObject {
         self.videoId = videoId
         self.videos = videos
         self.poster = poster ?? Self.posters.object(forKey: videoId as NSString)
+    }
+
+    /// Forget the poster kept for `videoId` (the video was deleted).
+    public static func forgetPoster(_ videoId: String) {
+        posters.removeObject(forKey: videoId as NSString)
     }
 
     /// A poster known on this phone (your own new post).
@@ -345,6 +365,13 @@ public final class VideoPreloader {
     public func take(_ videoId: String) -> LoopingPlayer? {
         guard let index = ready.firstIndex(where: { $0.id == videoId }) else { return nil }
         return ready.remove(at: index).player
+    }
+
+    /// Stop buffering `videoId` and release its player (the video was deleted).
+    public func forget(_ videoId: String) {
+        tasks.removeValue(forKey: videoId)?.cancel()
+        for entry in ready where entry.id == videoId { entry.player.stop() }
+        ready.removeAll { $0.id == videoId }
     }
 
     /// Videos buffered right now (for tests and diagnostics).
