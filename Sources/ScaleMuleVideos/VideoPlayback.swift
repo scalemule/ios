@@ -146,6 +146,10 @@ public final class VideoPlaybackModel: ObservableObject {
     private let videos: VideosService
     private var looping = LoopingPlayer()
     private var startTask: Task<Void, Never>?
+    /// The viewing session being measured (ScaleMule Video analytics).
+    private var analytics: PlaybackAnalytics?
+    /// Audio session category last applied by `play` (for tests).
+    private(set) var appliedAudioCategory: AVAudioSession.Category?
     private static let posters = NSCache<NSString, UIImage>()
 
     public init(videoId: String, videos: VideosService, poster: UIImage? = nil) {
@@ -173,11 +177,22 @@ public final class VideoPlaybackModel: ObservableObject {
 
     /// Play: this phone's copy if it has one, else the stream once ready
     /// (waiting up to about three minutes for conversion).
-    public func play(audioCategory: AVAudioSession.Category = .ambient) {
+    ///
+    /// Sound follows `isMuted`, as in TikTok or Reels: unmuted plays with
+    /// `.playback` (heard with the ring switch on silent), muted uses
+    /// `.ambient` and leaves the person's music playing. Pass
+    /// `audioCategory` to choose yourself. Each play is measured for
+    /// ScaleMule Video analytics (`PlaybackAnalytics`).
+    public func play(audioCategory: AVAudioSession.Category? = nil) {
         isPaused = false
-        try? AVAudioSession.sharedInstance().setCategory(audioCategory, mode: .moviePlayback)
+        appliedAudioCategory = audioCategory ?? Self.audioCategory(muted: isMuted)
+        Self.useAudio(muted: isMuted, category: audioCategory)
+        if analytics == nil, PlaybackAnalytics.isEnabled {
+            analytics = PlaybackAnalytics(videoId: videoId, videos: videos)
+        }
         if phase == .playing {
             looping.player.play()
+            analytics?.attach(looping.player)
             return
         }
         startTask?.cancel()
@@ -199,17 +214,25 @@ public final class VideoPlaybackModel: ObservableObject {
     public func pause() {
         startTask?.cancel()
         looping.player.pause()
+        analytics?.pause()
     }
 
     public func togglePause() {
         guard phase == .playing else { return }
         isPaused.toggle()
-        if isPaused { looping.player.pause() } else { looping.player.play() }
+        if isPaused {
+            looping.player.pause()
+            analytics?.pause()
+        } else {
+            looping.player.play()
+        }
     }
 
-    /// Release the player (off screen).
+    /// Release the player (off screen). The viewing session ends here.
     public func stop() {
         startTask?.cancel()
+        analytics?.finish()
+        analytics = nil
         looping.stop()
         phase = .idle
     }
@@ -219,6 +242,7 @@ public final class VideoPlaybackModel: ObservableObject {
         looping.load(file)
         looping.player.isMuted = isMuted
         looping.player.play()
+        analytics?.attach(looping.player)
         phase = .playing
     }
 
@@ -235,6 +259,7 @@ public final class VideoPlaybackModel: ObservableObject {
             for item in looping.player.items() { item.preferredForwardBufferDuration = 0 }
             looping.player.isMuted = isMuted
             looping.player.play()
+            analytics?.attach(looping.player)
             phase = .playing
             return
         }

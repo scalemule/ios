@@ -98,6 +98,13 @@ public final class SocialFeedModel: ObservableObject {
     /// The latest load; an earlier one still running (another filter) is dropped.
     private var loadGeneration = 0
     private var pollTask: Task<Void, Never>?
+    /// Product analytics (post views and actions), set by `attach`.
+    public private(set) var analytics: AnalyticsEvents?
+    /// A post counts as seen after this long on screen (TikTok/Instagram use about 1 s).
+    public var viewThreshold: TimeInterval = 1
+    private var activePost: (post: MediaPost, since: Date, position: Int)?
+    private var viewedPostIds: Set<String> = []
+    private var viewTask: Task<Void, Never>?
     /// Fixed content (previews, UI tests): nothing is loaded.
     private var isFixed = false
     #if os(iOS)
@@ -134,6 +141,7 @@ public final class SocialFeedModel: ObservableObject {
         self.social = social
         self.photos = photos
         self.currentUserId = currentUserId
+        if analytics == nil { analytics = AnalyticsEvents(client: social.client) }
         #if os(iOS)
         nearby = NearbyFeed(social: social, access: location, pageSize: pageSize)
         #endif
@@ -266,6 +274,66 @@ public final class SocialFeedModel: ObservableObject {
         if case .failure(let apiError) = result, apiError.code != .conflict {
             if wasLiked { likedIds.insert(post.id) } else { likedIds.remove(post.id) }
         }
+    }
+
+    // MARK: - Views and actions (analytics)
+
+    /// Tell the model which post is on screen (call it from `FeedPager`'s
+    /// active id). A post seen for `viewThreshold` counts one view in Social
+    /// (total and unique viewers per post); leaving it records
+    /// `feed.post_view` with how long it was on screen.
+    public func setActivePost(_ postId: String?) {
+        if let current = activePost {
+            let dwell = Date().timeIntervalSince(current.since)
+            if dwell >= 0.3 {
+                analytics?.emit("feed.post_view", properties(current.post, extra: [
+                    "dwell_ms": Int(dwell * 1000),
+                    "position": current.position,
+                    "counted": viewedPostIds.contains(current.post.id),
+                ]))
+            }
+        }
+        viewTask?.cancel()
+        viewTask = nil
+        guard let postId, let index = items.firstIndex(where: { $0.id == postId }) else {
+            activePost = nil
+            return
+        }
+        let post = items[index]
+        activePost = (post, Date(), index)
+        guard !viewedPostIds.contains(postId), !isFixed, let social else { return }
+        let threshold = viewThreshold
+        viewTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(threshold * 1_000_000_000))
+            guard !Task.isCancelled, let self, self.activePost?.post.id == postId else { return }
+            self.viewedPostIds.insert(postId)
+            _ = await social.recordView(.post, id: postId)
+        }
+    }
+
+    /// Record something the person did with a post: `open` (full screen),
+    /// `share`, `save`, `like`, `report`... sent as `feed.post_<action>`.
+    public func trackAction(_ action: String, _ post: MediaPost, extra: [String: Any?] = [:]) {
+        analytics?.emit("feed.post_\(action)", properties(post, extra: extra))
+    }
+
+    /// Send waiting analytics now (for example when the app goes to the background).
+    public func flushAnalytics() {
+        setActivePost(nil)
+        Task { await analytics?.flush() }
+    }
+
+    private func properties(_ post: MediaPost, extra: [String: Any?]) -> [String: Any?] {
+        var values: [String: Any?] = [
+            "post_id": post.id,
+            "media_id": post.mediaId,
+            "media_kind": post.kind.rawValue,
+            "is_mine": post.isMine,
+            "filter": place == nil ? filter.rawValue : "place",
+            "has_location": post.location != nil,
+        ]
+        for (key, value) in extra { values[key] = value }
+        return values
     }
 
     // MARK: - Hiding, blocking, deleting

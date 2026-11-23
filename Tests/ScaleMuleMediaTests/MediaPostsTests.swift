@@ -340,6 +340,43 @@ final class SocialFeedModelTests: XCTestCase {
         while !condition() && Date() < end { try? await Task.sleep(nanoseconds: 20_000_000) }
     }
 
+    func testAPostSeenForASecondCountsOneViewAndDwellIsReported() async {
+        var batches: [String] = []
+        server.start { request in
+            if request.url!.path == "/v1/analytics/v2/events/batch" {
+                let data = request.httpBody ?? request.httpBodyStream.map { stream -> Data in
+                    stream.open(); defer { stream.close() }
+                    var data = Data(); var buffer = [UInt8](repeating: 0, count: 4096)
+                    while stream.hasBytesAvailable { let n = stream.read(&buffer, maxLength: buffer.count); if n <= 0 { break }; data.append(buffer, count: n) }
+                    return data
+                } ?? Data()
+                batches.append(String(decoding: data, as: UTF8.self))
+                return emptyOK
+            }
+            if request.httpMethod == "POST" { return emptyOK }
+            return ok(page(["a", "b", "c"]))
+        }
+        let model = await model()
+        model.viewThreshold = 0.3
+        await model.loadFeed()
+        model.setActivePost("a")
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        model.setActivePost("b")            // swiped past quickly: not a view
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        model.setActivePost("a")            // back to a: already counted
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        model.trackAction("share", model.items[0])
+        model.flushAnalytics()
+        await waitUntil { !batches.isEmpty }
+        let views = server.requests.filter { $0.hasSuffix("/views") }
+        XCTAssertEqual(views, ["POST /v1/social/post/a/views"], "one view, for the post seen long enough")
+        let sent = batches.joined()
+        XCTAssertTrue(sent.contains("feed.post_view"), sent)
+        XCTAssertTrue(sent.contains("dwell_ms"))
+        XCTAssertTrue(sent.contains("feed.post_share"))
+        XCTAssertTrue(sent.contains("\"media_kind\":\"photo\""))
+    }
+
     func testPagesAndStopsAtAShortPage() async {
         server.start { request in
             request.url!.query!.contains("page=1") ? ok(page(["a", "b", "c"])) : ok(page(["c", "d"]))
