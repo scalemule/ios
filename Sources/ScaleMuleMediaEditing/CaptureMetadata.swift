@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import ImageIO
 import CoreLocation
@@ -88,6 +89,50 @@ public enum CaptureMetadata {
             return data
         }
         return output as Data
+    }
+
+    /// Where a video was recorded (a video picked from the library), from its
+    /// ISO 6709 location metadata, when it has one.
+    public static func location(inVideo url: URL) async -> CaptureLocation? {
+        let asset = AVURLAsset(url: url)
+        var items: [AVMetadataItem] = []
+        if let common = try? await asset.load(.metadata) { items += common }
+        for format in (try? await asset.load(.availableMetadataFormats)) ?? [] {
+            items += (try? await asset.loadMetadata(for: format)) ?? []
+        }
+        var takenAt = Date()
+        for item in items where item.identifier == .quickTimeMetadataCreationDate || item.commonKey == .commonKeyCreationDate {
+            if let text = try? await item.load(.stringValue), let date = ISO8601DateFormatter().date(from: text) {
+                takenAt = date
+                break
+            }
+        }
+        for item in items where item.identifier == .quickTimeMetadataLocationISO6709
+            || item.identifier == .quickTimeUserDataLocationISO6709
+            || item.commonKey == .commonKeyLocation {
+            if let text = try? await item.load(.stringValue), var capture = parseISO6709(text) {
+                capture.takenAt = takenAt
+                return capture
+            }
+        }
+        return nil
+    }
+
+    /// "+37.7749-122.4194+010.000/" → a capture location.
+    static func parseISO6709(_ text: String) -> CaptureLocation? {
+        var numbers: [Double] = []
+        var current = ""
+        for character in text {
+            if character == "+" || character == "-" || character == "/" {
+                if let value = Double(current) { numbers.append(value) }
+                current = character == "/" ? "" : String(character)
+            } else if character.isNumber || character == "." {
+                current.append(character)
+            }
+        }
+        if let value = Double(current) { numbers.append(value) }
+        guard numbers.count >= 2, (-90...90).contains(numbers[0]), (-180...180).contains(numbers[1]) else { return nil }
+        return CaptureLocation(latitude: numbers[0], longitude: numbers[1], altitude: numbers.count > 2 ? numbers[2] : nil)
     }
 
     /// The GPS position in an image's metadata (a photo picked from the
