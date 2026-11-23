@@ -413,6 +413,14 @@ final class SocialFeedModelTests: XCTestCase {
         await model.toggleLike(c)
         XCTAssertTrue(model.isLiked(c))
         XCTAssertTrue(server.requests.contains("POST /v1/social/post/c/like"))
+
+        // Hiding or blocking re-filters what is shown; a like tapped since
+        // the load must survive it (it used to fall back to the load state).
+        model.hideReported(a)
+        model.setBlockedAuthors(["somebody-else"])
+        XCTAssertTrue(model.isLiked(c), "the tapped like survives hiding and blocking")
+        XCTAssertTrue(model.isLiked(b))
+        XCTAssertEqual(model.likeCount(c), 1)
     }
 
     func testReportedPostsAndBlockedPeopleDisappear() async {

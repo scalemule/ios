@@ -138,7 +138,7 @@ public final class SocialFeedModel: ObservableObject {
         nearby = NearbyFeed(social: social, access: location, pageSize: pageSize)
         #endif
         guard !isFixed else { return }
-        if items.isEmpty, filter == .everyone { items = visible(savedPage()) }
+        if items.isEmpty, filter == .everyone { items = visible(fromServer(savedPage())) }
     }
 
     /// Show these posts and load nothing (previews, UI tests, sample feeds).
@@ -185,7 +185,7 @@ public final class SocialFeedModel: ObservableObject {
             hasMore = true
             let page = try await fetchNext(generation: mine)
             guard mine == loadGeneration else { return }
-            items = visible(page)
+            items = visible(fromServer(page))
             newItems = []
             if filter == .everyone { savePage(page) }
         } catch {
@@ -213,7 +213,7 @@ public final class SocialFeedModel: ObservableObject {
             let page = try await fetchNext(generation: mine)
             guard mine == loadGeneration else { return }
             let known = Set(items.map(\.id))
-            items.append(contentsOf: visible(page).filter { !known.contains($0.id) })
+            items.append(contentsOf: visible(fromServer(page.filter { !known.contains($0.id) })))
         } catch {
             logger.error("Load more failed: \(error.localizedDescription, privacy: .public)")
         }
@@ -223,7 +223,7 @@ public final class SocialFeedModel: ObservableObject {
     public func showNewItems() {
         guard !newItems.isEmpty else { return }
         let known = Set(newItems.map(\.id))
-        items = visible(newItems) + items.filter { !known.contains($0.id) }
+        items = visible(fromServer(newItems)) + items.filter { !known.contains($0.id) }
         newItems = []
     }
 
@@ -312,11 +312,19 @@ public final class SocialFeedModel: ObservableObject {
 
     /// Hide posts by blocked people and posts the person reported; take the
     /// server's word on which ones the person liked.
+    /// Hide posts the person reported and posts by people they blocked.
     private func visible(_ list: [MediaPost]) -> [MediaPost] {
+        list.filter { !hiddenPostIds.contains($0.id) && !blockedAuthorIds.contains($0.authorId) }
+    }
+
+    /// Posts just read from Social: their liked state is Social's word.
+    /// (Only here: re-filtering posts already shown must never undo a
+    /// like tapped since they loaded.)
+    private func fromServer(_ list: [MediaPost]) -> [MediaPost] {
         for post in list {
             if post.likedByMe { likedIds.insert(post.id) } else { likedIds.remove(post.id) }
         }
-        return list.filter { !hiddenPostIds.contains($0.id) && !blockedAuthorIds.contains($0.authorId) }
+        return list
     }
 
     // MARK: - New posts
