@@ -23,14 +23,24 @@ public final class PhotoPrefetcher {
     /// Pictures of these photos at `width`, nearest first. Earlier requests
     /// not in `ids` are cancelled.
     public func prefetch(_ ids: [String], width: Int) {
+        prefetch(ids.map { ($0, width) })
+    }
+
+    /// Each photo at its own width (for example upright 1080, wide 1600),
+    /// nearest first. Earlier requests not listed are cancelled.
+    public func prefetch(_ requests: [(id: String, width: Int)]) {
+        let ids = requests.map(\.id)
         let wanted = Set(ids)
         for (id, task) in running where !wanted.contains(id) {
             task.cancel()
             running.removeValue(forKey: id)
         }
-        waiting = ids
-            .filter { running[$0] == nil && cache.image(for: PhotoImageCache.key(for: $0)) == nil }
-            .map { ($0, width) }
+        waiting = requests.filter { request in
+            guard running[request.id] == nil else { return false }
+            guard let cached = cache.image(for: PhotoImageCache.key(for: request.id)) else { return true }
+            let side = max(cached.size.width * cached.scale, cached.size.height * cached.scale)
+            return side < CGFloat(request.width) * 0.9
+        }
         startNext()
     }
 
