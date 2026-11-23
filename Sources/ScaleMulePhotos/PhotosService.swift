@@ -50,6 +50,25 @@ public final class PhotosService: ServiceModule, @unchecked Sendable {
         case original
     }
 
+    /// Who can see a new photo.
+    public enum UploadVisibility: Sendable, Equatable {
+        /// The uploader and the app's team (the default).
+        case `private`
+        /// Any signed-in user of the app: use it for a photo that goes into
+        /// a public post or feed. ScaleMule Social also makes the photos of
+        /// a public post `app_public` on the server when the post is
+        /// created, and private again when it is deleted, so older app
+        /// versions are covered too.
+        case appPublic
+
+        var storage: StorageVisibility {
+            switch self {
+            case .private: return .private
+            case .appPublic: return .appPublic
+            }
+        }
+    }
+
     /// Upload one image as the signed-in person and register it as a photo.
     ///
     /// Not a single request: the bytes go to S3 through Storage (every PUT
@@ -62,6 +81,7 @@ public final class PhotosService: ServiceModule, @unchecked Sendable {
         filename: String,
         mimeType: String = "image/jpeg",
         quality: UploadQuality = .adaptive,
+        visibility: UploadVisibility = .private,
         onProgress: (@Sendable (UploadProgress) -> Void)? = nil
     ) async -> ApiResponse<PhotoInfo> {
         var payload = data
@@ -78,7 +98,7 @@ public final class PhotosService: ServiceModule, @unchecked Sendable {
         let options = UploadOptions(
             filename: name,
             contentType: type,
-            visibility: .private,
+            visibility: visibility.storage,
             compression: quality == .original ? .off : .adaptive,
             onProgress: onProgress
         )
