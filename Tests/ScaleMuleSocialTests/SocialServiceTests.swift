@@ -118,6 +118,7 @@ final class SocialServiceTests: XCTestCase {
         XCTAssertEqual(page?.posts.first?.distanceKm, 1.4)
         XCTAssertEqual(page?.posts.first?.post.location?.label, "Сан-Франциско 旧金山 🌉")
         XCTAssertEqual(page?.posts.first?.post.content, "Ocean Beach")
+        XCTAssertNil(page?.posts.first?.post.likedByMe)
     }
 
     func testNotHereIsRecognised() async {
@@ -136,6 +137,8 @@ final class SocialServiceTests: XCTestCase {
         }
         let posts = assertApiSuccess(await social.feed())
         XCTAssertNil(posts?.first?.location)
+        let liked = try? JSONDecoder().decode(SocialPost.self, from: Data(Self.postJSON.replacingOccurrences(of: "\"likes_count\": 2,", with: "\"likes_count\": 2, \"liked_by_me\": true,").utf8))
+        XCTAssertEqual(liked?.likedByMe, true)
     }
 
     func testLikeUsesTargetPath() async {

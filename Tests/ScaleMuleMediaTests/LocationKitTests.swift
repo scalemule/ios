@@ -38,6 +38,18 @@ final class LocationKitTests: XCTestCase {
         XCTAssertEqual(rural.available(.standard), [.city, .exact, .none])
     }
 
+    @MainActor
+    func testRadiusLabelsFollowTheRegion() {
+        XCTAssertEqual(NearbyFeed.radiusLabel(5, locale: Locale(identifier: "en_US")), "Within 3 mi")
+        XCTAssertEqual(NearbyFeed.radiusLabel(160, locale: Locale(identifier: "en_US")), "Within 100 mi")
+        XCTAssertEqual(NearbyFeed.radiusLabel(25, locale: Locale(identifier: "de_DE")), "Within 25 km")
+        let us = NearbyFeed.radiusChoicesKm(locale: Locale(identifier: "en_US"))
+        XCTAssertEqual(us.map { NearbyFeed.radiusLabel($0, locale: Locale(identifier: "en_US")) },
+                       ["Within 3 mi", "Within 15 mi", "Within 50 mi", "Within 100 mi"])
+        XCTAssertTrue(us.allSatisfy { $0 <= 160 }, "never past what Social allows")
+        XCTAssertEqual(NearbyFeed.radiusChoicesKm(locale: Locale(identifier: "fr_FR")), [5, 25, 80, 160])
+    }
+
     func testVenueCategoriesLeaveOutSensitivePlaces() {
         let categories = Set(PlaceResolver.venueCategories)
         for sensitive: MKPointOfInterestCategory in [.school, .university, .hospital, .hotel, .campground, .fitnessCenter, .police, .pharmacy] {

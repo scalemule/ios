@@ -36,6 +36,16 @@ public final class NearbyFeed: ObservableObject {
     @Published public private(set) var problem: Problem?
     @Published public private(set) var hasMore = false
 
+    /// A distance the person picked, in km (at most 160 unless they may
+    /// explore anywhere); nil lets Social widen 5 → 25 → 160 km by itself.
+    public var fixedRadiusKm: Double?
+    /// Distances to offer, in km: round miles where people use miles
+    /// (3, 15, 50, 100 mi), else 5, 25, 80, 160 km. 160 km is the most anyone
+    /// searches around where they are.
+    public static func radiusChoicesKm(locale: Locale = .current) -> [Double] {
+        usesMiles(locale) ? [3, 15, 50].map { $0 * 1.609_344 } + [160] : [5, 25, 80, 160]
+    }
+
     /// How far back "around" looks (Social's default is 30 days).
     public var windowHours: Int?
     /// How far back a venue looks (Social's default is 24 hours).
@@ -93,6 +103,26 @@ public final class NearbyFeed: ObservableObject {
         posts.insert(NearbyPost(post: post, distanceKm: (distance * 10).rounded() / 10), at: 0)
     }
 
+    /// "Within 3 mi" or "Within 5 km", in the units of the person's region.
+    public static func radiusLabel(_ km: Double, locale: Locale = .current) -> String {
+        let formatter = MeasurementFormatter()
+        formatter.locale = locale
+        formatter.unitOptions = .providedUnit
+        formatter.unitStyle = .medium
+        formatter.numberFormatter.maximumFractionDigits = 0
+        var value = usesMiles(locale) ? km / 1.609_344 : km
+        if value > 20 { value = (value / 5).rounded() * 5 } else { value = value.rounded() }
+        let unit: UnitLength = usesMiles(locale) ? .miles : .kilometers
+        return "Within " + formatter.string(from: Measurement(value: max(value, 1), unit: unit))
+    }
+
+    static func usesMiles(_ locale: Locale) -> Bool {
+        if #available(iOS 16.0, *) {
+            return locale.measurementSystem == .us || locale.measurementSystem == .uk
+        }
+        return !locale.usesMetricSystem
+    }
+
     public func remove(postId: String) {
         posts.removeAll { $0.id == postId }
     }
@@ -115,7 +145,7 @@ public final class NearbyFeed: ObservableObject {
             result = await social.postsNear(
                 latitude: origin.coordinate.latitude,
                 longitude: origin.coordinate.longitude,
-                radiusKm: first ? nil : radiusKm,
+                radiusKm: first ? fixedRadiusKm : radiusKm,
                 windowHours: windowHours,
                 limit: pageSize,
                 cursor: first ? nil : cursor
