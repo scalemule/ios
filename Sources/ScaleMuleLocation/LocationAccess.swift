@@ -18,7 +18,7 @@ public final class LocationAccess: NSObject, ObservableObject {
     @Published public private(set) var isSimulated = false
 
     private let manager = CLLocationManager()
-    private var waiters: [UUID: CheckedContinuation<CLLocation?, Never>] = [:]
+    private var waiters: [UUID: (maxAge: TimeInterval, continuation: CheckedContinuation<CLLocation?, Never>)] = [:]
     private var watching = false
 
     public override init() {
@@ -26,7 +26,8 @@ public final class LocationAccess: NSObject, ObservableObject {
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-        manager.distanceFilter = 100
+        // Every fix while watching, so `current` stays fresh standing still.
+        manager.distanceFilter = kCLDistanceFilterNone
     }
 
     /// Location is on for this app.
@@ -50,7 +51,8 @@ public final class LocationAccess: NSObject, ObservableObject {
 
     public func stopWatching() {
         watching = false
-        manager.stopUpdatingLocation()
+        // Stopping updates would cancel a pending one-off request.
+        if waiters.isEmpty { manager.stopUpdatingLocation() }
     }
 
     /// A real fix no older than `maxAge` and within 1 km, or `nil` when location
@@ -60,11 +62,12 @@ public final class LocationAccess: NSObject, ObservableObject {
         guard isOn else { return nil }
         let id = UUID()
         return await withCheckedContinuation { continuation in
-            waiters[id] = continuation
+            waiters[id] = (maxAge, continuation)
             manager.requestLocation()
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                self?.waiters.removeValue(forKey: id)?.resume(returning: nil)
+                self?.waiters.removeValue(forKey: id)?.continuation.resume(returning: nil)
+                self?.stopIfIdle()
             }
         }
     }
@@ -94,13 +97,24 @@ public final class LocationAccess: NSObject, ObservableObject {
         isSimulated = false
         guard location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 1_000 else { return }
         current = location
-        finishWaiters(location)
+        // A cached old fix often comes first: each waiter takes only one
+        // young enough for it and keeps waiting otherwise.
+        for (id, waiter) in waiters where Self.isUsable(location, maxAge: waiter.maxAge) {
+            waiters.removeValue(forKey: id)
+            waiter.continuation.resume(returning: location)
+        }
+        stopIfIdle()
     }
 
     private func finishWaiters(_ location: CLLocation?) {
         let pending = waiters
         waiters.removeAll()
-        for continuation in pending.values { continuation.resume(returning: location) }
+        for waiter in pending.values { waiter.continuation.resume(returning: location) }
+        stopIfIdle()
+    }
+
+    private func stopIfIdle() {
+        if !watching && waiters.isEmpty { manager.stopUpdatingLocation() }
     }
 
     private func authorizationChanged(_ status: CLAuthorizationStatus) {

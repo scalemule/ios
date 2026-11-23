@@ -23,11 +23,14 @@ final class LocationKitTests: XCTestCase {
         XCTAssertEqual(choices.available(noExact), [.place, .city, .none])
         let placesOnly = LocationSettings(allowedPrecisions: [.place], presenceRequired: true, defaultPrecision: .place)
         XCTAssertEqual(choices.defaultKind(placesOnly), .place)
+        // No city found: the default is no location, never the venue nearby.
+        let noCity = LocationChoices(places: [museum], city: nil, cityIsNearest: false, exact: spot)
+        XCTAssertEqual(noCity.defaultKind(.standard), .none)
         let nothing = LocationSettings(allowedPrecisions: [], presenceRequired: true, defaultPrecision: .city)
         XCTAssertEqual(choices.available(nothing), [.none])
         XCTAssertEqual(choices.defaultKind(nothing), .none)
         // Outside a city: the nearest one; nowhere near one: an area.
-        let napa = SharedLocation(precision: .city, latitude: 38.297, longitude: -122.286, name: "Napa")
+        let napa = SharedLocation(precision: .city, latitude: 38.297, longitude: -122.286, name: "near Napa", locality: "Napa")
         XCTAssertEqual(LocationChoices(places: [], city: napa, cityIsNearest: true, exact: spot).label(for: .city), "near Napa")
         let county = SharedLocation(precision: .area, latitude: 39.1, longitude: -120.9, name: "Placer County")
         let rural = LocationChoices(places: [], city: county, cityIsNearest: false, exact: spot)
@@ -37,7 +40,7 @@ final class LocationKitTests: XCTestCase {
 
     func testVenueCategoriesLeaveOutSensitivePlaces() {
         let categories = Set(PlaceResolver.venueCategories)
-        for sensitive: MKPointOfInterestCategory in [.school, .hospital, .hotel, .fitnessCenter, .police, .pharmacy] {
+        for sensitive: MKPointOfInterestCategory in [.school, .university, .hospital, .hotel, .campground, .fitnessCenter, .police, .pharmacy] {
             XCTAssertFalse(categories.contains(sensitive), "\(sensitive.rawValue)")
         }
         XCTAssertTrue(categories.contains(.museum))
@@ -119,6 +122,8 @@ final class LocationKitTests: XCTestCase {
         XCTAssertEqual(read?.latitude ?? 0, 37.7749, accuracy: 1e-4)
         XCTAssertEqual(read?.longitude ?? 0, -122.4194, accuracy: 1e-4)
         XCTAssertEqual(CaptureMetadata.parseISO6709("-33.8688+151.2093/")?.longitude, 151.2093)
+        let withCRS = CaptureMetadata.parseISO6709("+27.5916+086.5640+8850CRSWGS_84/")
+        XCTAssertEqual(withCRS?.altitude, 8850)
         XCTAssertNil(CaptureMetadata.parseISO6709("nonsense"))
         let plain = try await VideoComposer.export(VideoEdit(clips: [try clip()]))
         let none = await CaptureMetadata.location(inVideo: plain.file)

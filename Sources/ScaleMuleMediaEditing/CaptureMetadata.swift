@@ -120,6 +120,8 @@ public enum CaptureMetadata {
 
     /// "+37.7749-122.4194+010.000/" → a capture location.
     static func parseISO6709(_ text: String) -> CaptureLocation? {
+        // A coordinate reference ("CRSWGS_84") may follow; only the numbers before it count.
+        let text = text.components(separatedBy: "CRS").first ?? text
         var numbers: [Double] = []
         var current = ""
         for character in text {

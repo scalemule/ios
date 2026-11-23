@@ -98,6 +98,7 @@ public final class NearbyFeed: ObservableObject {
     }
 
     private func reset(_ problem: Problem) {
+        isLoading = false
         posts = []
         radiusKm = nil
         hasMore = false
