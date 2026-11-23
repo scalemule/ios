@@ -34,6 +34,7 @@ Or in Xcode: File > Add Package Dependencies > enter `https://github.com/scalemu
 | `ScaleMuleSocial` | Posts, the app feed, likes |
 | `ScaleMuleStorage` | Uploads straight to S3: sized to the connection, multipart, retried, resumable |
 | `ScaleMulePhotos` | Photo upload (checked for unsafe content) and sized images |
+| `ScaleMuleVideos` | Short videos: resumable upload, adaptive streaming (HLS) playback links |
 | `ScaleMuleSafety` | Versioned consent (Terms, Privacy, licences), reporting content, blocking people, support messages |
 
 ## Quick Start

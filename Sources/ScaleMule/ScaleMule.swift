@@ -5,4 +5,5 @@
 @_exported import ScaleMuleSocial
 @_exported import ScaleMuleStorage
 @_exported import ScaleMulePhotos
+@_exported import ScaleMuleVideos
 @_exported import ScaleMuleSafety
