@@ -18,6 +18,11 @@ public struct ZoomPreset: Identifiable, Equatable, Sendable {
 
     public var id: CGFloat { factor }
 
+    public init(factor: CGFloat, display: CGFloat) {
+        self.factor = factor
+        self.display = display
+    }
+
     /// "0.5", "1", "2", "4" (the Camera app's style).
     public var label: String {
         let rounded = (display * 10).rounded() / 10
