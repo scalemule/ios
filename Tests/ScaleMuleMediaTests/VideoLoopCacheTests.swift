@@ -1,6 +1,5 @@
 #if os(iOS)
 import AVFoundation
-import UIKit
 import XCTest
 import ScaleMuleTestHelpers
 @testable import ScaleMuleCore
@@ -8,90 +7,48 @@ import ScaleMuleTestHelpers
 
 final class VideoLoopCacheTests: XCTestCase {
     @MainActor
-    func testDownloadedCopyOnlySplicesIntoTheMatchingVideoFormat() async throws {
-        let current = try XCTUnwrap(Bundle.module.url(forResource: "portrait-1", withExtension: "mov", subdirectory: "Fixtures"))
-        let different = try XCTUnwrap(Bundle.module.url(forResource: "fragmented", withExtension: "mp4", subdirectory: "Fixtures"))
-        let looping = LoopingPlayer()
-        looping.player.isMuted = true
-        looping.load(current)
-        looping.player.play()
-        defer { looping.stop() }
-        let deadline = Date().addingTimeInterval(5)
-        while looping.player.currentItem?.tracks.isEmpty != false, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(20))
+    func testExistingPlaybackKeepsItsSourceUntilReactivationUsesTheDownloadedCache() async throws {
+        PlaybackAnalytics.isEnabled = false
+        defer { PlaybackAnalytics.isEnabled = true }
+        let fixture = try XCTUnwrap(Bundle.module.url(forResource: "fragmented", withExtension: "mp4", subdirectory: "Fixtures"))
+        let bytes = try Data(contentsOf: fixture)
+        let (app, session) = createTestClient()
+        let master = self.master, media = self.media
+        MockURLProtocol.requestHandler = { request in
+            let url = request.url!
+            let ok = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            if url.path.hasSuffix("/playlist.m3u8") { return (ok, Data(master.utf8)) }
+            if url.path.hasSuffix("/1080p/index.m3u8") { return (ok, Data(media.utf8)) }
+            if url.path.hasSuffix("segments.m4s") { return (ok, bytes) }
+            return TestFixtures.mockResponse(statusCode: 404, json: "{}")
         }
-        let same = await VideoPlaybackModel.hasMatchingVideoFormat(looping.player.currentItem, file: current)
-        let changed = await VideoPlaybackModel.hasMatchingVideoFormat(looping.player.currentItem, file: different)
-        let unknown = await VideoPlaybackModel.hasMatchingVideoFormat(nil, file: current)
-        XCTAssertTrue(same)
-        XCTAssertFalse(changed, "changing the decoder format during a visible loop must be deferred")
-        XCTAssertFalse(unknown, "unknown stream formats must keep the current video running")
+        let place = folder()
+        defer { try? FileManager.default.removeItem(at: place) }
+        let cache = VideoLoopCache(folder: place, session: session)
+        let id = UUID().uuidString
+        let model = VideoPlaybackModel(videoId: id, videos: VideosService(app: app), loopCache: cache)
+        model.isMuted = true
+        model.loadsCaptions = false
+        model.play(file: fixture)
+        defer { model.stop() }
+        let stream = URL(string: "https://api.example.com/v1/videos/v1/playlist.m3u8")!
+        let downloaded = await cache.file(for: id, stream: stream)
+        let file = try XCTUnwrap(downloaded)
+        // A completed background download must not replace the visible loop.
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline {
+            XCTAssertEqual((model.player.currentItem?.asset as? AVURLAsset)?.url, fixture)
+            try await Task.sleep(for: .milliseconds(30))
+        }
+        model.stop()
+        model.play()
+        let startDeadline = Date().addingTimeInterval(5)
+        while model.phase != .playing, Date() < startDeadline { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(model.phase, .playing)
+        XCTAssertEqual((model.player.currentItem?.asset as? AVURLAsset)?.url, file,
+                       "the next viewing session must use the completed local cache")
     }
 
-    @MainActor
-    func testPendingCachedCopyCannotReviveAStoppedOrReplacedPlayer() async throws {
-        let fixture = try XCTUnwrap(Bundle.module.url(forResource: "fragmented", withExtension: "mp4", subdirectory: "Fixtures"))
-        let place = folder()
-        try FileManager.default.createDirectory(at: place, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: place) }
-        let copy = place.appendingPathComponent("copy.mp4")
-        try FileManager.default.copyItem(at: fixture, to: copy)
-        for replace in [false, true] {
-            let looping = LoopingPlayer()
-            var callbacks = 0
-            looping.load(fixture)
-            looping.replaceAtNextLoop(with: copy) { callbacks += 1 }
-            if replace { looping.load(fixture) } else { looping.stop() }
-            try await Task.sleep(for: .milliseconds(150))
-            XCTAssertFalse(looping.hasPendingReplacement)
-            XCTAssertEqual(callbacks, 0, "canceled preparation must not switch another viewing session")
-            XCTAssertEqual(looping.player.rate, 0, "background cache preparation must not start playback")
-            if !replace { XCTAssertNil(looping.player.currentItem) }
-            looping.stop()
-        }
-    }
-
-    @MainActor
-    func testSwitchingToTheDownloadedCopyNeverEmptiesTheVisibleQueue() async throws {
-        guard #available(iOS 17, *) else { return }
-        let fixture = try XCTUnwrap(Bundle.module.url(forResource: "fragmented", withExtension: "mp4", subdirectory: "Fixtures"))
-        let place = folder()
-        try FileManager.default.createDirectory(at: place, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: place) }
-        let first = place.appendingPathComponent("stream.mp4"), copy = place.appendingPathComponent("download.mp4")
-        try FileManager.default.copyItem(at: fixture, to: first)
-        try FileManager.default.copyItem(at: fixture, to: copy)
-        let looping = LoopingPlayer()
-        let surface = PlayerLayerView.PlayerUIView(frame: CGRect(x: 0, y: 0, width: 180, height: 320))
-        let controller = UIViewController()
-        controller.view.addSubview(surface)
-        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
-        window.rootViewController = controller
-        window.makeKeyAndVisible()
-        surface.configure(player: looping.player, gravity: .resizeAspectFill, onReady: nil)
-        looping.player.isMuted = true
-        looping.load(first)
-        looping.player.play()
-        defer { looping.stop(); window.isHidden = true }
-        let firstFrameDeadline = Date().addingTimeInterval(5)
-        while !surface.playerLayer.isReadyForDisplay, Date() < firstFrameDeadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        XCTAssertTrue(surface.playerLayer.isReadyForDisplay)
-        let empty = EmptyQueueEvents()
-        let observation = looping.player.observe(\.currentItem, options: [.new]) { player, _ in
-            if player.currentItem == nil { empty.note() }
-        }
-        defer { observation.invalidate() }
-        looping.replaceAtNextLoop(with: copy)
-        let duration = try await AVURLAsset(url: fixture).load(.duration).seconds
-        let deadline = Date().addingTimeInterval(duration * 3 + 5)
-        while looping.source != copy, Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
-        XCTAssertEqual(looping.source, copy)
-        XCTAssertEqual(empty.count, 0, "switching a visible loop must not remove its current item, even for one frame")
-        try await Task.sleep(for: .milliseconds(200))
-        XCTAssertTrue(surface.playerLayer.isReadyForDisplay)
-    }
     private let master = """
     #EXTM3U
     #EXT-X-STREAM-INF:BANDWIDTH=600000,RESOLUTION=360x640
@@ -218,12 +175,5 @@ final class VideoLoopCacheTests: XCTestCase {
         XCTAssertGreaterThan(looping.player.rate, 0, "still playing")
         looping.stop()
     }
-}
-
-private final class EmptyQueueEvents: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = 0
-    func note() { lock.lock(); value += 1; lock.unlock() }
-    var count: Int { lock.lock(); defer { lock.unlock() }; return value }
 }
 #endif

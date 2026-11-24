@@ -367,12 +367,12 @@ FeedPager(items: posts, activeID: $activeId, lookahead: 4, loadMoreDistance: 8,
   keeps a poster behind the video for the entire viewing session. The native
   player layer reveals a drawable frame without a SwiftUI poster-removal pass
   or opacity animation. Preloading never guarantees immediate playback.
-- Switching a streamed loop to its downloaded copy preserves the current
-  item and queues local replicas after it, rather than clearing the visible
-  queue. `VideoPlaybackModel` defers a change of video format (for example AVC
-  to HEVC) until the next activation, so the decoder isn't reconfigured during
-  the visible loop. On iOS 16 the running stream also stays in place and the
-  next activation uses the cached file.
+- After a streamed video has been watched once, `VideoPlaybackModel` caches
+  a copy for the next activation. The visible session keeps the same source
+  and decoder for all its loops. It never clears the queue or swaps encoding
+  while the person is watching. `LoopingPlayer.replaceAtNextLoop` is deprecated
+  because an explicit source reset can interrupt rendering.
+
 
 `RemotePhotoView` and `RemoteVideoView` accept `onReady` callbacks for
 content-dependent onboarding. A photo reports readiness when its decoded

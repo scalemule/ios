@@ -99,10 +99,9 @@ public struct PlayerLayerView: UIViewRepresentable {
 
 /// Plays one item over and over.
 ///
-/// A streamed (HLS) video is fetched again on every loop by AVPlayerLooper:
-/// a 5 s clip looped for a minute downloads it a dozen times, keeping the
-/// radio and decoder busy and the phone hot. `replaceAtNextLoop` moves the
-/// loop to a copy on the phone at the next loop boundary.
+/// Keep the source unchanged during a viewing session. VideoPlaybackModel
+/// downloads a watched stream for the next activation, so visible loops do
+/// not reset the decoder or discard their displayed frame.
 @MainActor
 public final class LoopingPlayer {
     public let player = AVQueuePlayer()
@@ -110,11 +109,6 @@ public final class LoopingPlayer {
     private var loopObservation: NSKeyValueObservation?
     private var pendingFile: URL?
     private var willReplace: (() -> Void)?
-    private var replacementTask: Task<Void, Never>?
-    private var replacementObservation: NSKeyValueObservation?
-    private var retiringLooper: AVPlayerLooper?
-    private var generation = 0
-    private let logger = Logger(subsystem: "com.scalemule.sdk", category: "VideoLoop")
     /// Where the loop plays from (a stream link or a file on the phone).
     public private(set) var source: URL?
     /// Called on the main actor each time a loop ends.
@@ -152,13 +146,6 @@ public final class LoopingPlayer {
 
     /// Loop `item`, only `timeRange` of it when given (a trimmed preview).
     public func load(_ item: AVPlayerItem, timeRange: CMTimeRange? = nil) {
-        generation += 1
-        replacementTask?.cancel()
-        replacementTask = nil
-        replacementObservation = nil
-        pendingFile = nil
-        willReplace = nil
-        retiringLooper = nil
         loopObservation = nil
         looper?.disableLooping()
         player.removeAllItems()
@@ -170,74 +157,22 @@ public final class LoopingPlayer {
             looper = AVPlayerLooper(player: player, templateItem: item)
         }
         self.looper = looper
-        observeLoops(looper)
-    }
-
-    private func observeLoops(_ looper: AVPlayerLooper) {
-        loopObservation = looper.observe(\.loopCount, options: [.new]) { [weak self, weak looper] _, _ in
+        loopObservation = looper.observe(\.loopCount, options: [.new]) { [weak self] _, _ in
             // Next turn of the main queue: the player has moved on to the
             // next copy by then (analytics count the loop first).
             DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    guard let self, let looper, self.looper === looper else { return }
-                    self.loopEnded()
-                }
+                MainActor.assumeIsolated { self?.loopEnded() }
             }
         }
     }
 
-    /// Queue `file` (the same video, on the phone) after the current stream
-    /// iteration. Never empty the visible queue or restart its current item.
-    /// On iOS 16, keep the running stream; the next activation uses the cache.
-    /// `willReplace` runs when the queued local copy becomes current.
+    /// Play `file` (the same video, on the phone) from the next loop on.
+    /// `willReplace` runs just before the switch.
+    @available(*, deprecated, message: "Starting another source can interrupt rendering. Use the cached file on the next playback instead.")
     public func replaceAtNextLoop(with file: URL, willReplace: (() -> Void)? = nil) {
-        guard source != file, pendingFile == nil else { return }
+        guard source != file else { return }
         pendingFile = file
         self.willReplace = willReplace
-        guard #available(iOS 17, *) else { return }
-        let generation = generation
-        replacementTask = Task { [weak self] in
-            let asset = AVURLAsset(url: file)
-            do {
-                let duration = try await asset.load(.duration)
-                guard duration.isNumeric, duration.seconds > 0,
-                      let self, !Task.isCancelled, self.generation == generation,
-                      self.pendingFile == file, self.player.currentItem != nil else { return }
-                self.queueLocalCopy(asset, file: file, generation: generation)
-            } catch {
-                guard let self, !Task.isCancelled, self.generation == generation else { return }
-                self.logger.warning("Could not prepare a cached loop; continuing the current stream")
-                self.pendingFile = nil
-                self.willReplace = nil
-            }
-        }
-    }
-
-    @available(iOS 17, *)
-    private func queueLocalCopy(_ asset: AVURLAsset, file: URL, generation: Int) {
-        // disableLooping lets the current replica finish. Retain its looper
-        // until that happens, then let AVQueuePlayer advance to prepared local
-        // replicas. Calling load/removeAllItems here discarded the visible frame.
-        retiringLooper = looper
-        retiringLooper?.disableLooping()
-        loopObservation = nil
-        let next = AVPlayerLooper(player: player, templateItem: AVPlayerItem(asset: asset),
-                                  timeRange: .invalid, existingItemsOrdering: .loopingItemsFollowExistingItems)
-        looper = next
-        observeLoops(next)
-        replacementObservation = player.observe(\.currentItem, options: [.initial, .new]) { [weak self] _, _ in
-            DispatchQueue.main.async {
-                guard let self, self.generation == generation,
-                      (self.player.currentItem?.asset as? AVURLAsset)?.url == file else { return }
-                self.source = file
-                self.pendingFile = nil
-                self.willReplace?()
-                self.willReplace = nil
-                self.replacementObservation = nil
-                self.retiringLooper = nil
-                self.onLoop?()
-            }
-        }
     }
 
     /// A copy is waiting for the next loop (tests).
@@ -245,14 +180,18 @@ public final class LoopingPlayer {
 
     private func loopEnded() {
         guard looper != nil else { return }
+        if let file = pendingFile {
+            pendingFile = nil
+            let playing = player.rate > 0
+            willReplace?()
+            willReplace = nil
+            load(file)
+            if playing { player.play() }
+        }
         onLoop?()
     }
 
     public func stop() {
-        generation += 1
-        replacementTask?.cancel()
-        replacementTask = nil
-        replacementObservation = nil
         player.cancelPendingPrerolls()
         player.pause()
         loopObservation = nil
@@ -260,7 +199,6 @@ public final class LoopingPlayer {
         willReplace = nil
         looper?.disableLooping()
         looper = nil
-        retiringLooper = nil
         player.removeAllItems()
     }
 }
@@ -470,6 +408,7 @@ public final class VideoPlaybackModel: ObservableObject {
     public var player: AVPlayer { looping.player }
 
     private let videos: VideosService
+    private let loopCache: VideoLoopCache
     private var looping = LoopingPlayer()
     private var startTask: Task<Void, Never>?
     /// The viewing session being measured (ScaleMule Video analytics).
@@ -480,14 +419,15 @@ public final class VideoPlaybackModel: ObservableObject {
     private var captionTask: Task<Void, Never>?
     /// Set to false to skip fetching captions.
     public var loadsCaptions = true
-    /// Loop from a copy on the phone after the first full play of a stream
-    /// (no download on every loop). Off: always stream.
+    /// Cache a watched stream on this phone, then use that file on the next
+    /// activation. The current viewing session keeps its source for clean loops.
     public var loopsFromLocalCopy = true
     private var localCopyTask: Task<Void, Never>?
 
-    public init(videoId: String, videos: VideosService, poster: UIImage? = nil) {
+    public init(videoId: String, videos: VideosService, poster: UIImage? = nil, loopCache: VideoLoopCache = .shared) {
         self.videoId = videoId
         self.videos = videos
+        self.loopCache = loopCache
         self.poster = poster ?? VideoPosterStore.shared.cached(videoId)
     }
 
@@ -599,37 +539,23 @@ public final class VideoPlaybackModel: ObservableObject {
         looping.onLoop = { [weak self] in self?.loopedOnce() }
     }
 
-    /// Watched to the end of a streamed video: fetch it once and keep
-    /// looping from the phone.
+    /// Watched to the end of a streamed video: fetch it once for the next
+    /// activation, while the current stream continues looping unchanged.
     private func loopedOnce() {
         guard loopsFromLocalCopy, localCopyTask == nil, let stream = looping.source,
               stream.scheme == "https" || stream.scheme == "http" else { return }
         let videoId = videoId, target = looping
         localCopyTask = Task { [weak self] in
-            let cached = VideoLoopCache.shared.cachedFile(for: videoId) != nil
-            guard let file = await VideoLoopCache.shared.file(for: videoId, stream: stream),
+            let cached = self?.loopCache.cachedFile(for: videoId) != nil
+            guard let file = await self?.loopCache.file(for: videoId, stream: stream),
                   !Task.isCancelled, let self, self.looping === target, self.phase == .playing else { return }
             if !cached, let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize {
                 self.analytics?.downloaded(bytes: Int64(size))
             }
-            // The download may be a higher-resolution HEVC rendition while
-            // the adaptive stream is AVC. Reconfiguring that decoder mid-view
-            // flashes the poster even with a nonempty queue. Keep streaming
-            // this session in that case; the next activation uses the file.
-            guard await Self.hasMatchingVideoFormat(target.player.currentItem, file: file),
-                  !Task.isCancelled, self.looping === target, self.phase == .playing else { return }
-            target.replaceAtNextLoop(with: file) { [weak self] in self?.analytics?.itemReplaced() }
+            // Preserve the current source and decoder for the whole viewing
+            // session. A mid-loop source swap can flash even with a warm file.
+            // start() uses this completed cache on the next activation.
         }
-    }
-
-    /// Only splice cached media into a running queue if its video decoder
-    /// configuration is unchanged. Unknown formats use the next-activation path.
-    static func hasMatchingVideoFormat(_ current: AVPlayerItem?, file: URL) async -> Bool {
-        guard let track = current?.tracks.first(where: { $0.assetTrack?.mediaType == .video })?.assetTrack,
-              let activeFormats = try? await track.load(.formatDescriptions), activeFormats.count == 1,
-              let cachedTrack = try? await AVURLAsset(url: file).loadTracks(withMediaType: .video).first,
-              let cachedFormats = try? await cachedTrack.load(.formatDescriptions), cachedFormats.count == 1 else { return false }
-        return CMFormatDescriptionEqual(activeFormats[0], otherFormatDescription: cachedFormats[0])
     }
 
     private func loadCaptions() {
@@ -665,7 +591,7 @@ public final class VideoPlaybackModel: ObservableObject {
             return
         }
         guard !Task.isCancelled else { return }
-        if let local = VideoFileCache.file(for: videoId) ?? VideoLoopCache.shared.cachedFile(for: videoId) {
+        if let local = VideoFileCache.file(for: videoId) ?? loopCache.cachedFile(for: videoId) {
             playNow(file: local)
             return
         }
