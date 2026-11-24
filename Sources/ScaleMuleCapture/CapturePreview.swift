@@ -25,6 +25,12 @@ public struct CapturePreview: UIViewRepresentable {
         let view = PreviewUIView()
         view.previewLayer.session = cameraManager.session
         view.previewLayer.videoGravity = .resizeAspectFill
+        view.onScreenCaptureChange = { [weak controller = cameraManager] captured in
+            Task { @MainActor in
+                guard let controller, controller.isPreviewScreenCaptured != captured else { return }
+                controller.isPreviewScreenCaptured = captured
+            }
+        }
         cameraManager.captureRotationAngle = { [weak view] in view?.captureRotationAngle }
 
         let coordinator = context.coordinator
@@ -44,6 +50,13 @@ public struct CapturePreview: UIViewRepresentable {
         coordinator.cameraManager = cameraManager
         coordinator.onFocus = onFocus
         coordinator.onDoubleTap = onDoubleTap
+    }
+
+    public static func dismantleUIView(_ view: PreviewUIView, coordinator: Coordinator) {
+        view.onScreenCaptureChange?(false)
+        view.onScreenCaptureChange = nil
+        view.previewLayer.session = nil
+        coordinator.cameraManager?.captureRotationAngle = { nil }
     }
 
     @MainActor
@@ -77,13 +90,26 @@ public struct CapturePreview: UIViewRepresentable {
 
         private var coordinator: AVCaptureDevice.RotationCoordinator?
         private var observation: NSKeyValueObservation?
+        var onScreenCaptureChange: ((Bool) -> Void)?
 
         override public init(frame: CGRect) {
             super.init(frame: frame)
             backgroundColor = .black
+            registerForTraitChanges([UITraitSceneCaptureState.self]) { (view: PreviewUIView, _: UITraitCollection) in
+                view.reportScreenCaptureState()
+            }
         }
 
         required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+        override public func didMoveToWindow() {
+            super.didMoveToWindow()
+            reportScreenCaptureState()
+        }
+
+        private func reportScreenCaptureState() {
+            onScreenCaptureChange?(window != nil && traitCollection.sceneCaptureState == .active)
+        }
 
         var captureRotationAngle: CGFloat? { coordinator?.videoRotationAngleForHorizonLevelCapture }
 

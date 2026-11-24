@@ -247,6 +247,16 @@ uploader and the same picture, at least as large.
 The media modules give any ScaleMule app the full posting flow; the app
 draws its own screens and decides what a post is.
 
+Call `startSession()` when the camera screen appears and `stopSession()` when
+it disappears. The controller pauses in the background, resumes only while
+that screen still requests the camera, and attempts one recovery after a media
+services reset. Show `interruption?.message` for temporary iOS restrictions,
+and offer `startSession()` as a manual retry for `error`.
+`CapturePreview` updates `isPreviewScreenCaptured` using the view's scene traits.
+Use it for a screen-sharing hint, not to disable capture: it also includes
+screen recordings that can still show a working camera. iPhone mirroring can
+make iOS suppress camera frames; the SDK does not bypass that restriction.
+
 ```swift
 // Capture: photos, and video takes of several clips (hold, release, hold again).
 let camera = CaptureController(maxVideoSeconds: 60)

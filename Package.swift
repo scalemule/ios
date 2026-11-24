@@ -45,6 +45,7 @@ let package = Package(
         .target(name: "ScaleMuleMediaPosts", dependencies: ["ScaleMuleCore", "ScaleMuleSocial", "ScaleMulePhotos", "ScaleMuleVideos", "ScaleMuleMediaQueue", "ScaleMuleLocation"], path: "Sources/ScaleMuleMediaPosts", resources: [.process("PrivacyInfo.xcprivacy")]),
         .target(name: "ScaleMule", dependencies: ["ScaleMuleCore", "ScaleMuleAuth", "ScaleMulePermissions", "ScaleMuleWorkspaces", "ScaleMuleSocial", "ScaleMuleStorage", "ScaleMulePhotos", "ScaleMuleVideos", "ScaleMuleCapture", "ScaleMuleMediaEditing", "ScaleMuleMediaQueue", "ScaleMuleLocation", "ScaleMuleFeed", "ScaleMuleSafety", "ScaleMuleProfiles", "ScaleMuleMediaPosts", "ScaleMulePush"], path: "Sources/ScaleMule"),
         .testTarget(name: "ScaleMulePushTests", dependencies: ["ScaleMulePush", "ScaleMuleCore", "ScaleMuleTestHelpers"], path: "Tests/ScaleMulePushTests"),
+        .testTarget(name: "ScaleMuleCaptureTests", dependencies: ["ScaleMuleCapture"], path: "Tests/ScaleMuleCaptureTests"),
         .target(name: "ScaleMuleTestHelpers", dependencies: ["ScaleMuleCore"], path: "Tests/Helpers"),
         .testTarget(name: "ScaleMuleCoreTests", dependencies: ["ScaleMuleCore", "ScaleMuleTestHelpers"], path: "Tests/ScaleMuleCoreTests"),
         .testTarget(name: "ScaleMuleAuthTests", dependencies: ["ScaleMuleAuth", "ScaleMuleCore", "ScaleMuleTestHelpers"], path: "Tests/ScaleMuleAuthTests"),
