@@ -1,7 +1,8 @@
 import Foundation
 import ScaleMuleCore
 
-/// Posts, the app feed and likes (ScaleMule Social, `/v1/social`).
+/// Posts, the app feed and likes (ScaleMule Social, `/v1/social`). Following
+/// people, comments and the activity inbox are in `SocialConnections.swift`.
 ///
 /// The feed holds the signed-in person's own posts, every `public` post in the
 /// app and `followers` posts from people they follow, newest first. Posts by
@@ -21,8 +22,9 @@ public final class SocialService: ServiceModule, @unchecked Sendable {
     // MARK: - Feed
 
     /// One page of the feed, newest first. `perPage` is capped at 100 by the server.
-    public func feed(page: Int = 1, perPage: Int = 20) async -> ApiResponse<[SocialPost]> {
-        await posts(path: "/v1/social/feed", page: page, perPage: perPage)
+    /// `scope: .following` holds only posts by people the person follows.
+    public func feed(scope: FeedScope = .everyone, page: Int = 1, perPage: Int = 20) async -> ApiResponse<[SocialPost]> {
+        await posts(path: "/v1/social/feed", page: page, perPage: perPage, scope: scope == .everyone ? nil : scope)
     }
 
     /// One page of a person's posts. Your own include private ones.
@@ -120,11 +122,13 @@ public final class SocialService: ServiceModule, @unchecked Sendable {
 
     // MARK: - Private
 
-    private func posts(path: String, page: Int, perPage: Int) async -> ApiResponse<[SocialPost]> {
+    private func posts(path: String, page: Int, perPage: Int, scope: FeedScope? = nil) async -> ApiResponse<[SocialPost]> {
+        var query = ["page": String(max(page, 1)), "per_page": String(min(max(perPage, 1), 100))]
+        if let scope { query["scope"] = scope.rawValue }
         let result: ApiResponse<PostsEnvelope> = await client.request(RequestOptions(
             method: .get,
             path: path,
-            query: ["page": String(max(page, 1)), "per_page": String(min(max(perPage, 1), 100))],
+            query: query,
             credential: .accessToken
         ))
         switch result {

@@ -57,6 +57,11 @@ public struct MediaPost: Identifiable, Equatable, Codable, Sendable {
     public let likes: Int
     /// Whether the signed-in person had liked it when it was loaded.
     public let likedByMe: Bool
+    /// Comments when the post was loaded.
+    public let comments: Int
+    /// Whether the signed-in person followed the author when it was loaded;
+    /// nil when Social did not say (see `FollowStore`).
+    public let authorFollowed: Bool?
     public let createdAt: Date?
     public let isMine: Bool
 
@@ -86,6 +91,8 @@ public struct MediaPost: Identifiable, Equatable, Codable, Sendable {
         caption = post.metadataString(Keys.caption).flatMap { $0.isEmpty ? nil : $0 }
         likes = post.likesCount
         likedByMe = post.likedByMe ?? false
+        comments = post.commentsCount
+        authorFollowed = post.viewerFollowsAuthor
         kind = post.metadataString(Keys.kind).flatMap(Kind.init(rawValue:)) ?? .photo
         duration = post.metadataDouble(Keys.duration)
     }
@@ -157,7 +164,7 @@ public struct MediaPost: Identifiable, Equatable, Codable, Sendable {
     // likesCount, likedAtLoad, latitude/longitude/precision/placeId) still read.
     private enum CodingKeys: String, CodingKey {
         case id, mediaId, authorId, authorName, kind, width, height, caption, duration
-        case location, place, likes, likedByMe, createdAt, isMine
+        case location, place, likes, likedByMe, createdAt, isMine, comments, authorFollowed
         case photoId, likesCount, likedAtLoad, latitude, longitude, precision, placeId
     }
 
@@ -192,6 +199,8 @@ public struct MediaPost: Identifiable, Equatable, Codable, Sendable {
         }
         likes = try c.decodeIfPresent(Int.self, forKey: .likes) ?? c.decodeIfPresent(Int.self, forKey: .likesCount) ?? 0
         likedByMe = try c.decodeIfPresent(Bool.self, forKey: .likedByMe) ?? c.decodeIfPresent(Bool.self, forKey: .likedAtLoad) ?? false
+        comments = try c.decodeIfPresent(Int.self, forKey: .comments) ?? 0
+        authorFollowed = try c.decodeIfPresent(Bool.self, forKey: .authorFollowed)
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt)
         isMine = try c.decode(Bool.self, forKey: .isMine)
     }
@@ -211,6 +220,8 @@ public struct MediaPost: Identifiable, Equatable, Codable, Sendable {
         try c.encodeIfPresent(place, forKey: .place)
         try c.encode(likes, forKey: .likes)
         try c.encode(likedByMe, forKey: .likedByMe)
+        try c.encode(comments, forKey: .comments)
+        try c.encodeIfPresent(authorFollowed, forKey: .authorFollowed)
         try c.encodeIfPresent(createdAt, forKey: .createdAt)
         try c.encode(isMine, forKey: .isMine)
     }

@@ -33,6 +33,9 @@ public struct SocialPost: Sendable, Decodable, Identifiable, Equatable {
     public let likedByMe: Bool?
     public let commentsCount: Int
     public let sharesCount: Int
+    /// Whether the signed-in person follows the author; nil when the server
+    /// did not say (false on your own posts).
+    public let viewerFollowsAuthor: Bool?
     /// ISO 8601 timestamp.
     public let createdAt: String
 
@@ -47,6 +50,7 @@ public struct SocialPost: Sendable, Decodable, Identifiable, Equatable {
         case likedByMe = "liked_by_me"
         case commentsCount = "comments_count"
         case sharesCount = "shares_count"
+        case viewerFollowsAuthor = "viewer_follows_author"
         case createdAt = "created_at"
     }
 
@@ -66,6 +70,7 @@ public struct SocialPost: Sendable, Decodable, Identifiable, Equatable {
         likedByMe = try? c.decodeIfPresent(Bool.self, forKey: .likedByMe)
         commentsCount = try c.decodeIfPresent(Int.self, forKey: .commentsCount) ?? 0
         sharesCount = try c.decodeIfPresent(Int.self, forKey: .sharesCount) ?? 0
+        viewerFollowsAuthor = try? c.decodeIfPresent(Bool.self, forKey: .viewerFollowsAuthor)
         createdAt = try c.decode(String.self, forKey: .createdAt)
     }
 
