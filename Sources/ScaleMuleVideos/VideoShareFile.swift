@@ -79,21 +79,29 @@ public enum VideoShareFile {
 
 /// Reading the playlists ScaleMule Video serves.
 enum HLSPlaylist {
-    /// The variant with the largest short side up to `maxShortSide` (else the smallest).
-    static func bestVariant(in master: String, base: URL, maxShortSide: Int) -> URL? {
-        var variants: [(shortSide: Int, url: URL)] = []
-        var pendingSide: Int?
+    /// The variant with the largest short side up to `maxShortSide` (else the
+    /// smallest). With `preferHEVC`, an HEVC variant of that size wins over
+    /// H.264 (about half the bytes); without, H.264 is taken when there is one
+    /// (files shared to other apps and phones).
+    static func bestVariant(in master: String, base: URL, maxShortSide: Int, preferHEVC: Bool = false) -> URL? {
+        var variants: [(shortSide: Int, hevc: Bool, url: URL)] = []
+        var pending: (side: Int, hevc: Bool)?
         for raw in master.split(whereSeparator: \.isNewline) {
             let line = raw.trimmingCharacters(in: .whitespaces)
             if line.hasPrefix("#EXT-X-STREAM-INF") {
-                pendingSide = resolutionShortSide(line) ?? 0
-            } else if let side = pendingSide, !line.isEmpty, !line.hasPrefix("#") {
-                if let url = URL(string: line, relativeTo: base)?.absoluteURL { variants.append((side, url)) }
-                pendingSide = nil
+                let codecs = (attribute("CODECS", in: line) ?? "").lowercased()
+                pending = (resolutionShortSide(line) ?? 0, codecs.contains("hvc1") || codecs.contains("hev1"))
+            } else if let variant = pending, !line.isEmpty, !line.hasPrefix("#") {
+                if let url = URL(string: line, relativeTo: base)?.absoluteURL { variants.append((variant.side, variant.hevc, url)) }
+                pending = nil
             }
         }
         let fitting = variants.filter { $0.shortSide <= maxShortSide }
-        return (fitting.max { $0.shortSide < $1.shortSide } ?? variants.min { $0.shortSide < $1.shortSide })?.url
+        let pool = fitting.isEmpty ? variants.filter { $0.shortSide == variants.map(\.shortSide).min() } : fitting
+        guard let side = (fitting.isEmpty ? pool.map(\.shortSide).min() : pool.map(\.shortSide).max()) else { return nil }
+        let sized = pool.filter { $0.shortSide == side }
+        let wanted = sized.first { $0.hevc == preferHEVC }
+        return (wanted ?? sized.first)?.url
     }
 
     /// The files that make up a media playlist, in order, each once (the

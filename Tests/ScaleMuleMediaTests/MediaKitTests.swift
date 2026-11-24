@@ -63,6 +63,54 @@ final class VideoComposerTests: XCTestCase {
         XCTAssertEqual(prepared.duration, 2.0, accuracy: 0.12)
     }
 
+    /// The posted file is one ScaleMule Video can stream as it is: HEVC,
+    /// upright pixels, ordinary colour, a keyframe at least every 2 s, a
+    /// streaming bitrate, sound kept.
+    func testStreamingEncodeIsStreamableAsItIs() async throws {
+        let edit = VideoEdit(clips: [try clip(1), try clip(2)])
+        let built = try await VideoComposer.build(edit)
+        let output = FileManager.default.temporaryDirectory.appendingPathComponent("stream-\(UUID().uuidString).mp4")
+        defer { try? FileManager.default.removeItem(at: output) }
+        let range = VideoComposer.trimmedRange(edit, total: built.composition.duration, maxSeconds: 60)
+        try await StreamingVideoEncoder.encode(
+            built.composition, videoComposition: built.videoComposition, timeRange: range,
+            metadata: [], encoding: .streaming, to: output
+        )
+        let asset = AVURLAsset(url: output)
+        let videoTracks = try await asset.loadTracks(withMediaType: .video)
+        let track = try XCTUnwrap(videoTracks.first)
+        let (descriptions, transform, size, rate) = try await track.load(.formatDescriptions, .preferredTransform, .naturalSize, .estimatedDataRate)
+        let format = try XCTUnwrap(descriptions.first)
+        XCTAssertEqual(CMFormatDescriptionGetMediaSubType(format), kCMVideoCodecType_HEVC, "HEVC")
+        XCTAssertEqual(CMFormatDescriptionGetExtension(format, extensionKey: kCMFormatDescriptionExtension_ColorPrimaries) as? String,
+                       kCMFormatDescriptionColorPrimaries_ITU_R_709_2 as String, "ordinary colour")
+        XCTAssertTrue(transform.isIdentity, "pixels upright, no rotation for players to apply")
+        XCTAssertEqual(size.width, 360)
+        XCTAssertEqual(size.height, 640)
+        XCTAssertLessThan(rate, 1_500_000, "streaming bitrate for a small frame")
+        let duration = try await asset.load(.duration).seconds
+        XCTAssertEqual(duration, 3, accuracy: 0.15)
+        let audio = try await asset.loadTracks(withMediaType: .audio)
+        XCTAssertFalse(audio.isEmpty, "sound kept")
+
+        // Keyframes: stream segments start on one.
+        let reader = try AVAssetReader(asset: asset)
+        let samples = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+        reader.add(samples)
+        XCTAssertTrue(reader.startReading())
+        var syncTimes: [Double] = []
+        while let sample = samples.copyNextSampleBuffer() {
+            let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false) as? [[CFString: Any]]
+            let notSync = attachments?.first?[kCMSampleAttachmentKey_NotSync] as? Bool ?? false
+            if !notSync { syncTimes.append(CMSampleBufferGetPresentationTimeStamp(sample).seconds) }
+        }
+        syncTimes.sort()
+        XCTAssertEqual(syncTimes.first ?? -1, 0, accuracy: 0.05)
+        let gaps = zip(syncTimes.dropFirst(), syncTimes).map { $0 - $1 }
+        XCTAssertLessThanOrEqual(gaps.max() ?? 0, 2.05, "a keyframe at least every 2 s: \(syncTimes)")
+        XCTAssertGreaterThanOrEqual(syncTimes.count, 2)
+    }
+
     func testTrimIsClampedAndLimited() throws {
         let total = CMTime(seconds: 90, preferredTimescale: 600)
         var edit = VideoEdit(clips: [])

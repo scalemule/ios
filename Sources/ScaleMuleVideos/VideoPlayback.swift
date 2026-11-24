@@ -179,7 +179,7 @@ public final class VideoLoopCache {
             return data
         }
         guard let masterData = await get(stream),
-              let variant = HLSPlaylist.bestVariant(in: String(decoding: masterData, as: UTF8.self), base: stream, maxShortSide: maxShortSide),
+              let variant = HLSPlaylist.bestVariant(in: String(decoding: masterData, as: UTF8.self), base: stream, maxShortSide: maxShortSide, preferHEVC: true),
               let mediaData = await get(variant) else { return nil }
         let parts = HLSPlaylist.files(in: String(decoding: mediaData, as: UTF8.self), base: variant)
         guard !parts.isEmpty else { return nil }
@@ -455,8 +455,12 @@ public final class VideoPlaybackModel: ObservableObject {
               stream.scheme == "https" || stream.scheme == "http" else { return }
         let videoId = videoId, target = looping
         localCopyTask = Task { [weak self] in
+            let cached = VideoLoopCache.shared.cachedFile(for: videoId) != nil
             guard let file = await VideoLoopCache.shared.file(for: videoId, stream: stream),
                   !Task.isCancelled, let self, self.looping === target, self.phase == .playing else { return }
+            if !cached, let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize {
+                self.analytics?.downloaded(bytes: Int64(size))
+            }
             target.replaceAtNextLoop(with: file) { [weak self] in self?.analytics?.itemReplaced() }
         }
     }
