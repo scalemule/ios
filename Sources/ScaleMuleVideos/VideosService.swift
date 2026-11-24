@@ -88,6 +88,7 @@ public final class VideosService: ServiceModule, @unchecked Sendable {
     public static func forgetLocalCopies(of id: String) {
         #if canImport(UIKit)
         VideoFileCache.remove(id)
+        VideoLoopCache.shared.forget(id)
         VideoLinkCache.shared.forget(id)
         VideoPreloader.shared.forget(id)
         VideoPlaybackModel.forgetPoster(id)
