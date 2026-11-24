@@ -464,6 +464,68 @@ Every app built on the SDK reports how its media is used, with no extra code:
   goes to the background.
 - `AnalyticsEvents` sends any other product event to ScaleMule Analytics.
 
+## Push notifications on iOS
+
+`ScaleMulePush` (also exported by `ScaleMule`) handles Apple's permission
+prompt, APNs registration, ScaleMule device registration, foreground alerts,
+sound and badges. Apps use the same SDK module; no Apple signing key belongs
+in the application or SDK.
+
+Create `PushNotifications(app: app)` once alongside your auth service. In a
+SwiftUI app, use `@UIApplicationDelegateAdaptor(ScaleMulePushAppDelegate.self)`
+and assign `appDelegate.pushNotifications = push` in the root's `onAppear`.
+An app with its own delegate instead forwards `didRegister...deviceToken`
+to `push.didRegister(deviceToken:)`, forwards the failure callback, and calls
+`push.install()` early. The controller owns the notification-center delegate;
+apps that already have one should explicitly forward its notification callbacks.
+
+```swift
+// Only after the person taps your Enable notifications button:
+let allowed = await push.requestAuthorization() // alerts + badge + sound
+// When the app becomes active or returns from iOS Settings:
+await push.refresh() // no new permission prompt
+// Before auth.logout() or permanent account deletion revokes the session:
+await push.deactivateBeforeSignOut()
+// If deletion fails and the same account remains signed in:
+await push.resume()
+```
+
+Use `push.setEnabled(false)` for the device's off switch. Re-enabling restores
+the server preference as well as registering with Apple. Observe `permission`,
+`isEnabled`, `isRegistered`, `isWorking` and `lastError` for your settings UI.
+The SDK observes auth changes, uses the user's session, and replaces previous
+account bindings on this device. It never logs or persists the APNs token.
+Only the server registration ID and local opt-in are retained. Failed cleanup
+is surfaced; OS registration stops immediately. Delivery must also respect
+server preferences and marketing consent. No broadcast or marketing opt-in is
+created by calling the SDK.
+
+Set `onNotificationTap` for app navigation. Cold-start taps wait for auth;
+payloads with a different `recipient_user_id` are ignored. Payload URLs are
+never opened automatically. Foreground presentation defaults to banner, list,
+badge and sound; iOS permission, Focus and sound settings still apply. Call
+`clearBadge()` when your app considers notifications seen; that does not mark
+server inbox records read. Notifications are cleared from the device on logout.
+
+Enable Push Notifications on the app's Apple App ID and signed target. Keep
+the `aps-environment` entitlement consistent with its provisioning profile.
+For the application's external ScaleMule vault, configure
+`communication/push/apns` with `p8_key_base64`, `key_id`, `team_id`, `bundle_id`
+and `is_production`. Development-signed builds use sandbox; TestFlight/App Store
+use production. Check the signed archive, not just the source entitlement.
+
+Send from a trusted server or the ScaleMule dashboard. The communication API's
+`sound: "default"` requests the standard sound; `sound: ""` omits sound.
+`badge: 3` sets an absolute count; `badge: 0` clears it. Custom sound filenames
+must refer to a sound actually bundled with the app. This module does not
+expose a mobile API for broadcasting or storing provider credentials.
+
+The push resource bundle includes a privacy manifest for its own UserDefaults
+usage and device/user identifiers. App privacy disclosures must also cover
+the host app, backend and any other SDKs. Verify real background delivery,
+sound, badge changes, permission denial and account cleanup on a signed device
+before shipping; payload/unit tests are not proof of APNs delivery.
+
 ## Auth Credential Model
 
 ScaleMule uses a multi-credential system, not a single bearer token:
