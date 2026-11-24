@@ -29,6 +29,7 @@ public final class PlaybackAnalytics {
     private var itemObservation: NSKeyValueObservation?
     /// The item being measured (a looping player swaps in a new copy each loop).
     private weak var measuredItem: AVPlayerItem?
+    private var replacing = false
     private var measuredDuration: Double = 0
     private var sampler: Task<Void, Never>?
     private var notifications: [NSObjectProtocol] = []
@@ -149,10 +150,23 @@ public final class PlaybackAnalytics {
         }
     }
 
+    /// The player is switching to the same video from another source (a
+    /// copy on the phone): the next item is not a new loop.
+    public func itemReplaced() {
+        replacing = true
+    }
+
     /// A looping player (AVPlayerLooper) moved to the next copy of the video:
     /// the loop that was playing ended.
     private func itemChanged(to item: AVPlayerItem?) {
         guard let item, item !== measuredItem else { return }
+        if replacing {
+            replacing = false
+            measuredItem = item
+            lastSampleAt = Date()
+            lastSampleTime = 0
+            return
+        }
         let previousLength = measuredDuration
         let hadPlayed = firstFrameAt != nil && measuredItem != nil
         measuredItem = item

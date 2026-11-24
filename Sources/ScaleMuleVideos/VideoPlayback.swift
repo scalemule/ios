@@ -35,10 +35,22 @@ public struct PlayerLayerView: UIViewRepresentable {
 }
 
 /// Plays one item over and over.
+///
+/// A streamed (HLS) video is fetched again on every loop by AVPlayerLooper:
+/// a 5 s clip looped for a minute downloads it a dozen times, keeping the
+/// radio and decoder busy and the phone hot. `replaceAtNextLoop` moves the
+/// loop to a copy on the phone at the next loop boundary.
 @MainActor
 public final class LoopingPlayer {
     public let player = AVQueuePlayer()
     private var looper: AVPlayerLooper?
+    private var loopObservation: NSKeyValueObservation?
+    private var pendingFile: URL?
+    private var willReplace: (() -> Void)?
+    /// Where the loop plays from (a stream link or a file on the phone).
+    public private(set) var source: URL?
+    /// Called on the main actor each time a loop ends.
+    public var onLoop: (() -> Void)?
 
     public init() {}
 
@@ -48,20 +60,165 @@ public final class LoopingPlayer {
 
     /// Loop `item`, only `timeRange` of it when given (a trimmed preview).
     public func load(_ item: AVPlayerItem, timeRange: CMTimeRange? = nil) {
+        loopObservation = nil
         looper?.disableLooping()
         player.removeAllItems()
+        source = (item.asset as? AVURLAsset)?.url
+        let looper: AVPlayerLooper
         if let timeRange {
             looper = AVPlayerLooper(player: player, templateItem: item, timeRange: timeRange)
         } else {
             looper = AVPlayerLooper(player: player, templateItem: item)
         }
+        self.looper = looper
+        loopObservation = looper.observe(\.loopCount, options: [.new]) { [weak self] _, _ in
+            // Next turn of the main queue: the player has moved on to the
+            // next copy by then (analytics count the loop first).
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.loopEnded() }
+            }
+        }
+    }
+
+    /// Play `file` (the same video, on the phone) from the next loop on.
+    /// `willReplace` runs just before the switch.
+    public func replaceAtNextLoop(with file: URL, willReplace: (() -> Void)? = nil) {
+        guard source != file else { return }
+        pendingFile = file
+        self.willReplace = willReplace
+    }
+
+    /// A copy is waiting for the next loop (tests).
+    public var hasPendingReplacement: Bool { pendingFile != nil }
+
+    private func loopEnded() {
+        guard looper != nil else { return }
+        if let file = pendingFile {
+            pendingFile = nil
+            let playing = player.rate > 0
+            willReplace?()
+            willReplace = nil
+            load(file)
+            if playing { player.play() }
+        }
+        onLoop?()
     }
 
     public func stop() {
         player.pause()
+        loopObservation = nil
+        pendingFile = nil
+        willReplace = nil
         looper?.disableLooping()
         looper = nil
         player.removeAllItems()
+    }
+}
+
+/// Copies of streamed videos kept on the phone once watched, so a looping
+/// video plays from the phone instead of downloading on every loop (the way
+/// short-video apps do it), and watching it again costs no data. One quality
+/// (the best up to `maxShortSide`) per video; the oldest go first beyond
+/// `maxBytes`.
+@MainActor
+public final class VideoLoopCache {
+    public static let shared = VideoLoopCache()
+
+    public var maxBytes: Int64 = 200 * 1024 * 1024
+    public var maxShortSide = 1080
+    let folder: URL
+    private let session: URLSession
+    private var running: [String: Task<URL?, Never>] = [:]
+
+    public init(folder: URL? = nil, session: URLSession = .shared) {
+        self.folder = folder ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("scalemule-video-loops", isDirectory: true)
+        self.session = session
+    }
+
+    /// The copy on this phone, if there is one.
+    public func cachedFile(for videoId: String) -> URL? {
+        let target = url(videoId)
+        guard FileManager.default.fileExists(atPath: target.path) else { return nil }
+        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: target.path)
+        return target
+    }
+
+    /// The copy on this phone, downloaded once from `stream` (the video's
+    /// HLS master link) when needed. Nil when it can't be fetched.
+    public func file(for videoId: String, stream: URL) async -> URL? {
+        if let kept = cachedFile(for: videoId) { return kept }
+        if let task = running[videoId] { return await task.value }
+        let target = url(videoId), folder = folder, session = session, side = maxShortSide
+        let task = Task<URL?, Never> {
+            await Self.download(stream: stream, maxShortSide: side, to: target, folder: folder, session: session)
+        }
+        running[videoId] = task
+        let file = await task.value
+        running[videoId] = nil
+        if file != nil { prune() }
+        return file
+    }
+
+    /// Delete the copy (the video was deleted).
+    public func forget(_ videoId: String) {
+        try? FileManager.default.removeItem(at: url(videoId))
+    }
+
+    private func url(_ videoId: String) -> URL {
+        let safe = videoId.filter { $0.isLetter || $0.isNumber || $0 == "-" }
+        return folder.appendingPathComponent(safe).appendingPathExtension("mp4")
+    }
+
+    /// ScaleMule Video keeps each quality as one fragmented MP4 behind its
+    /// playlist: the init section and fragments, joined, play as a file.
+    nonisolated static func download(stream: URL, maxShortSide: Int, to target: URL, folder: URL, session: URLSession) async -> URL? {
+        func get(_ url: URL) async -> Data? {
+            guard let (data, response) = try? await session.data(from: url),
+                  (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? false else { return nil }
+            return data
+        }
+        guard let masterData = await get(stream),
+              let variant = HLSPlaylist.bestVariant(in: String(decoding: masterData, as: UTF8.self), base: stream, maxShortSide: maxShortSide),
+              let mediaData = await get(variant) else { return nil }
+        let parts = HLSPlaylist.files(in: String(decoding: mediaData, as: UTF8.self), base: variant)
+        guard !parts.isEmpty else { return nil }
+        let manager = FileManager.default
+        try? manager.createDirectory(at: folder, withIntermediateDirectories: true)
+        let partial = folder.appendingPathComponent(UUID().uuidString).appendingPathExtension("part")
+        defer { try? manager.removeItem(at: partial) }
+        guard manager.createFile(atPath: partial.path, contents: nil),
+              let handle = try? FileHandle(forWritingTo: partial) else { return nil }
+        for part in parts {
+            if Task.isCancelled { try? handle.close(); return nil }
+            guard let (downloaded, response) = try? await session.download(from: part),
+                  (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? false,
+                  let bytes = try? Data(contentsOf: downloaded, options: .mappedIfSafe) else {
+                try? handle.close()
+                return nil
+            }
+            defer { try? manager.removeItem(at: downloaded) }
+            do { try handle.write(contentsOf: bytes) } catch { try? handle.close(); return nil }
+        }
+        try? handle.close()
+        try? manager.removeItem(at: target)
+        do { try manager.moveItem(at: partial, to: target) } catch { return nil }
+        return target
+    }
+
+    private func prune() {
+        let manager = FileManager.default
+        let keys: [URLResourceKey] = [.contentModificationDateKey, .fileSizeKey]
+        guard let files = try? manager.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys) else { return }
+        let dated = files.filter { $0.pathExtension == "mp4" }.map { file -> (URL, Date, Int64) in
+            let values = try? file.resourceValues(forKeys: Set(keys))
+            return (file, values?.contentModificationDate ?? .distantPast, Int64(values?.fileSize ?? 0))
+        }.sorted { $0.1 > $1.1 }
+        var total: Int64 = 0
+        for (file, _, size) in dated {
+            total += size
+            if total > maxBytes { try? manager.removeItem(at: file) }
+        }
     }
 }
 
@@ -173,6 +330,10 @@ public final class VideoPlaybackModel: ObservableObject {
     private var captionTask: Task<Void, Never>?
     /// Set to false to skip fetching captions.
     public var loadsCaptions = true
+    /// Loop from a copy on the phone after the first full play of a stream
+    /// (no download on every loop). Off: always stream.
+    public var loopsFromLocalCopy = true
+    private var localCopyTask: Task<Void, Never>?
     private static let posters = NSCache<NSString, UIImage>()
 
     public init(videoId: String, videos: VideosService, poster: UIImage? = nil) {
@@ -264,6 +425,8 @@ public final class VideoPlaybackModel: ObservableObject {
         analytics = nil
         captionTask?.cancel()
         captionTask = nil
+        localCopyTask?.cancel()
+        localCopyTask = nil
         captionClock.detach()
         looping.stop()
         phase = .idle
@@ -282,6 +445,20 @@ public final class VideoPlaybackModel: ObservableObject {
     private func playerStarted() {
         analytics?.attach(looping.player)
         if hasCaptions { captionClock.attach(looping.player) }
+        looping.onLoop = { [weak self] in self?.loopedOnce() }
+    }
+
+    /// Watched to the end of a streamed video: fetch it once and keep
+    /// looping from the phone.
+    private func loopedOnce() {
+        guard loopsFromLocalCopy, localCopyTask == nil, let stream = looping.source,
+              stream.scheme == "https" || stream.scheme == "http" else { return }
+        let videoId = videoId, target = looping
+        localCopyTask = Task { [weak self] in
+            guard let file = await VideoLoopCache.shared.file(for: videoId, stream: stream),
+                  !Task.isCancelled, let self, self.looping === target, self.phase == .playing else { return }
+            target.replaceAtNextLoop(with: file) { [weak self] in self?.analytics?.itemReplaced() }
+        }
     }
 
     private func loadCaptions() {
@@ -299,7 +476,7 @@ public final class VideoPlaybackModel: ObservableObject {
     }
 
     private func start() async {
-        if let local = VideoFileCache.file(for: videoId) {
+        if let local = VideoFileCache.file(for: videoId) ?? VideoLoopCache.shared.cachedFile(for: videoId) {
             play(file: local)
             return
         }
@@ -380,7 +557,7 @@ public final class VideoPreloader {
         for entry in ready where !wanted.contains(entry.id) { entry.player.stop() }
         ready.removeAll { !wanted.contains($0.id) }
         for id in wanted where tasks[id] == nil && !ready.contains(where: { $0.id == id }) {
-            guard VideoFileCache.file(for: id) == nil else { continue }
+            guard VideoFileCache.file(for: id) == nil, VideoLoopCache.shared.cachedFile(for: id) == nil else { continue }
             tasks[id] = Task { [weak self] in
                 guard case .success(let info) = await videos.get(id: id), info.isReady,
                       let url = await VideoLinkCache.shared.url(for: id, videos: videos),
