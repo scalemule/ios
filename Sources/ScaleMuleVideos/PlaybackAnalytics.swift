@@ -47,9 +47,11 @@ public final class PlaybackAnalytics {
     private var lastHeartbeatAt = Date()
     private var finished = false
     private static let network = NetworkKind()
-    /// Bytes of items already left (each loop is a new item) and of copies
-    /// downloaded for looping.
-    private var bytesBefore: Int64 = 0
+    /// Bytes every copy of the video downloaded this session: a looping
+    /// player keeps two or three copies queued and each streams on its own.
+    private var bytes = ByteLedger()
+    /// Those copies, held so their identity stays unique while counted.
+    private var countedItems: [AVPlayerItem] = []
     private var codecFound: (source: URL, codec: String?, variants: [Int: String])?
     private var codecTask: Task<Void, Never>?
 
@@ -158,12 +160,26 @@ public final class PlaybackAnalytics {
     /// The player is switching to the same video from another source (a
     /// copy on the phone): the next item is not a new loop.
     public func itemReplaced() {
+        noteBytes()
         replacing = true
     }
 
     /// A copy of the video was downloaded for looping (`bytes` long).
-    public func downloaded(bytes: Int64) {
-        bytesBefore += max(0, bytes)
+    public func downloaded(bytes count: Int64) {
+        bytes.download(count)
+    }
+
+    /// Every queued copy's bytes so far (copies that left keep their count).
+    private func noteBytes() {
+        guard let player else { return }
+        let items = (player as? AVQueuePlayer)?.items() ?? [player.currentItem].compactMap { $0 }
+        for item in items {
+            if !countedItems.contains(where: { $0 === item }) {
+                guard countedItems.count < 64 else { continue }
+                countedItems.append(item)
+            }
+            bytes.note(ObjectIdentifier(item), bytes: Self.bytes(of: item))
+        }
     }
 
     static func bytes(of item: AVPlayerItem) -> Int64 {
@@ -225,7 +241,7 @@ public final class PlaybackAnalytics {
     /// the loop that was playing ended.
     private func itemChanged(to item: AVPlayerItem?) {
         guard let item, item !== measuredItem else { return }
-        if let left = measuredItem { bytesBefore += Self.bytes(of: left) }
+        noteBytes()
         if replacing {
             replacing = false
             measuredItem = item
@@ -258,6 +274,7 @@ public final class PlaybackAnalytics {
             return
         }
         if item !== measuredItem { itemChanged(to: item) }
+        noteBytes()
         let length = duration(item)
         if length > 0 { measuredDuration = length }
         let position = player.currentTime().seconds
@@ -314,7 +331,8 @@ public final class PlaybackAnalytics {
             "player": "ios-avplayer",
         ]
         if let item = player?.currentItem {
-            values["bytes_transferred"] = bytesBefore + Self.bytes(of: item)
+            noteBytes()
+            values["bytes_transferred"] = bytes.total
             if let source = Self.playbackSource((item.asset as? AVURLAsset)?.url) { values["playback_source"] = source }
             if let codec = codec(of: item) { values["codec"] = codec }
             let length = duration(item)
@@ -408,5 +426,22 @@ private final class NetworkKind: @unchecked Sendable {
     }
 
     var kind: String { lock.lock(); defer { lock.unlock() }; return value }
+}
+/// Bytes downloaded in one viewing session: the most each player item has
+/// reported (its access log only grows) plus copies downloaded separately.
+/// Never goes down, whichever items come and go.
+struct ByteLedger {
+    private var perItem: [ObjectIdentifier: Int64] = [:]
+    private var downloaded: Int64 = 0
+
+    mutating func note(_ item: ObjectIdentifier, bytes: Int64) {
+        perItem[item] = max(perItem[item] ?? 0, max(0, bytes))
+    }
+
+    mutating func download(_ bytes: Int64) {
+        downloaded += max(0, bytes)
+    }
+
+    var total: Int64 { downloaded + perItem.values.reduce(0, +) }
 }
 #endif

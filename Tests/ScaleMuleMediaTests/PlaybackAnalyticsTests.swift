@@ -47,6 +47,26 @@ final class PlaybackAnalyticsTests: XCTestCase {
         XCTAssertEqual(events.count, count)
     }
 
+    /// A looping player streams two or three copies at once, and drops them
+    /// when the loop moves to the phone's copy: the count only ever grows.
+    func testBytesCountEveryCopyAndNeverGoDown() {
+        final class Copy {}
+        let first = Copy(), second = Copy(), third = Copy()
+        var ledger = ByteLedger()
+        ledger.note(ObjectIdentifier(first), bytes: 400_000)
+        ledger.note(ObjectIdentifier(second), bytes: 982_000)
+        XCTAssertEqual(ledger.total, 1_382_000)
+        ledger.note(ObjectIdentifier(first), bytes: 982_000)
+        XCTAssertEqual(ledger.total, 1_964_000, "the same copy grows, not added twice")
+        ledger.download(982_000)
+        XCTAssertEqual(ledger.total, 2_946_000, "the loop copy download counts")
+        ledger.note(ObjectIdentifier(first), bytes: 0)
+        XCTAssertEqual(ledger.total, 2_946_000, "a copy reporting less (reset or gone) takes nothing back")
+        ledger.note(ObjectIdentifier(third), bytes: -5)
+        ledger.download(-5)
+        XCTAssertEqual(ledger.total, 2_946_000, "nonsense values are ignored")
+    }
+
     func testPlaybackSourceSaysWhereTheCopyIs() {
         XCTAssertEqual(PlaybackAnalytics.playbackSource(URL(string: "https://api.example.com/v1/videos/v/playlist.m3u8")), "stream")
         XCTAssertEqual(PlaybackAnalytics.playbackSource(URL(fileURLWithPath: "/x/Caches/scalemule-video-loops/v.mp4")), "local_copy")
