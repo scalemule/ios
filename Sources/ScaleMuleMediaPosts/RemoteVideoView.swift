@@ -64,6 +64,7 @@ public struct RemoteVideoView: View {
 
     @AppStorage private var muted: Bool
     @StateObject private var model: VideoPlaybackModel
+    @State private var firstFrameReady = false
     @ObservedObject private var captionPreferences: CaptionPreferences
 
     /// - Parameters:
@@ -136,24 +137,36 @@ public struct RemoteVideoView: View {
     public var body: some View {
         ZStack {
             Color.black
-            if let poster = model.poster {
+            if landscape, let poster = model.poster {
                 Image(uiImage: poster)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .frame(width: size.width, height: size.height)
-                    .blur(radius: landscape ? 30 : 0)
-                    .opacity(landscape ? 0.5 : 1)
+                    .blur(radius: 30)
+                    .opacity(0.5)
                     .clipped()
-                if landscape {
-                    Image(uiImage: poster)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(width: size.width, height: size.height)
-                }
             }
-            PlayerLayerView(player: model.player, gravity: landscape ? .resizeAspect : .resizeAspectFill)
+            PlayerLayerView(player: model.player, gravity: landscape ? .resizeAspect : .resizeAspectFill) { ready in
+                firstFrameReady = ready
+            }
                 .frame(width: size.width, height: size.height)
                 .allowsHitTesting(false)
+            // Keep the real poster ABOVE the player until its first frame is
+            // drawable. Item-ready or play() alone does not mean a visible frame.
+            if !firstFrameReady {
+                if let poster = model.poster {
+                    Image(uiImage: poster)
+                        .resizable()
+                        .aspectRatio(contentMode: landscape ? .fit : .fill)
+                        .frame(width: size.width, height: size.height)
+                        .clipped()
+                        .accessibilityIdentifier("videoPoster")
+                } else {
+                    Color(white: 0.12)
+                    Image(systemName: "video.fill")
+                        .font(.system(size: 44)).foregroundStyle(.white.opacity(0.25))
+                }
+            }
             overlay
         }
         .frame(width: size.width, height: size.height)
@@ -214,7 +227,7 @@ public struct RemoteVideoView: View {
             if isActive { start() } else { model.pause() }
         }
         .onChange(of: muted) { value in model.isMuted = value }
-        .onDisappear { model.stop() }
+        .onDisappear { firstFrameReady = false; model.stop() }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Video")
     }
@@ -237,6 +250,10 @@ public struct RemoteVideoView: View {
     private var overlay: some View {
         switch model.phase {
         case .loading:
+            ProgressView().tint(.white)
+        case .playing where !firstFrameReady:
+            ProgressView().tint(.white)
+        case .idle where isActive:
             ProgressView().tint(.white)
         case .processing:
             VStack(spacing: 10) {

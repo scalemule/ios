@@ -331,9 +331,9 @@ await nearby.load()                                   // or .place(id:name:) for
 
 `FeedPager` is a TikTok/Reels-style vertical feed built on
 `UICollectionView`: only the cells near the screen exist and are reused,
-so memory stays flat however far people scroll (500 posts scroll with at
-most 4 post views alive). Preload what comes next so every swipe lands on
-a ready picture or a video that starts at once:
+so offscreen post views are released as people scroll. Prepare upcoming
+pictures and videos during scrolling; keep a video's poster visible until
+AVPlayerLayer reports its first frame ready:
 
 ```swift
 let prefetcher = PhotoPrefetcher(photos: photos)        // pictures, 3 at a time
@@ -341,6 +341,9 @@ FeedPager(items: posts, activeID: $activeId, lookahead: 4, loadMoreDistance: 8,
           onUpcoming: { next in
               prefetcher.prefetch(next.filter(\.isPhoto).map(\.mediaId), width: screenWidth)
               VideoPreloader.shared.preload(next.filter(\.isVideo).map(\.mediaId), videos: videos)
+          },
+          onActiveChanged: { post in
+              VideoPreloader.shared.activate(post?.isVideo == true ? post?.mediaId : nil)
           },
           onNearEnd: { Task { await loadMore() } },
           onRefresh: { await reload() }) { post, isActive in
@@ -352,9 +355,17 @@ FeedPager(items: posts, activeID: $activeId, lookahead: 4, loadMoreDistance: 8,
 - `PhotoImageCache` keeps decoded pictures within a byte budget, decodes
   them off the main thread and drops them on a memory warning (disk copies
   stay).
-- `VideoPreloader` fetches about the first second of each of the next
-  four videos (TikTok style) in muted, paused players that `VideoPlaybackModel` takes over; they are released on a
-  memory warning.
+- `VideoPreloader` prepares up to four muted, paused players, requests a
+  one-second forward buffer and runs AVFoundation preroll once ready. It
+  also caches decoded posters. `bufferedIds` contains completed prerolls;
+  `preparingIds` contains pending preparation, not a promise of downloaded data.
+- Call `activate` synchronously from `onActiveChanged`, before `onUpcoming`
+  prunes the old window. `VideoPlaybackModel` takes ownership of that same
+  player, including when its preparation is still in flight. Backgrounding
+  the feed should call `clear()`; memory warnings also release speculative work.
+- Fast swipes and slow connections can outrun preparation. `RemoteVideoView`
+  keeps the poster and loading state above the attached player until its
+  actual first frame is drawable. Preloading never guarantees immediate playback.
 
 ## Building a photo and video feed app
 
@@ -406,6 +417,9 @@ FeedPager(items: feed.items, activeID: $activeId,
           onUpcoming: { next in
               prefetcher.prefetch(next.filter(\.isPhoto).map { (id: $0.mediaId, width: RemotePhotoView.requestWidth(wide: $0.isLandscape)) })
               VideoPreloader.shared.preload(next.filter(\.isVideo).map(\.mediaId), videos: videos)
+          },
+          onActiveChanged: { post in
+              VideoPreloader.shared.activate(post?.isVideo == true ? post?.mediaId : nil)
           },
           onNearEnd: { Task { await feed.loadMore() } },
           onRefresh: { await feed.refresh() }) { post, isActive in
