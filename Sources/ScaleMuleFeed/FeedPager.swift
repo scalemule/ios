@@ -23,6 +23,8 @@ public struct FeedPager<Item: Identifiable, Content: View>: UIViewControllerRepr
     public var loadMoreDistance: Int
     /// Called when the posts after the one on screen change (nearest first).
     public var onUpcoming: ([Item]) -> Void
+    /// Synchronous handoff before the preload window moves past this item.
+    public var onActiveChanged: (Item?) -> Void
     /// Called when the post on screen is within `loadMoreDistance` of the end.
     public var onNearEnd: () -> Void
     /// Pull to refresh, when given.
@@ -36,6 +38,7 @@ public struct FeedPager<Item: Identifiable, Content: View>: UIViewControllerRepr
         lookahead: Int = 4,
         loadMoreDistance: Int = 8,
         onUpcoming: @escaping ([Item]) -> Void = { _ in },
+        onActiveChanged: @escaping (Item?) -> Void = { _ in },
         onNearEnd: @escaping () -> Void = {},
         onRefresh: (() async -> Void)? = nil,
         @ViewBuilder content: @escaping (Item, Bool) -> Content
@@ -45,6 +48,7 @@ public struct FeedPager<Item: Identifiable, Content: View>: UIViewControllerRepr
         self.lookahead = lookahead
         self.loadMoreDistance = loadMoreDistance
         self.onUpcoming = onUpcoming
+        self.onActiveChanged = onActiveChanged
         self.onNearEnd = onNearEnd
         self.onRefresh = onRefresh
         self.content = content
@@ -59,6 +63,21 @@ public struct FeedPager<Item: Identifiable, Content: View>: UIViewControllerRepr
     }
 }
 
+// Activity is SwiftUI state, not a collection snapshot change. Reconfiguring
+// cells on every scroll threshold prevents UIKit from promptly recycling them.
+@MainActor
+private final class FeedActivity<ID: Hashable>: ObservableObject {
+    @Published var activeID: ID?
+}
+
+private struct FeedPostContent<Item: Identifiable, Content: View>: View where Item.ID: Hashable {
+    let item: Item
+    @ObservedObject var activity: FeedActivity<Item.ID>
+    let content: (Item, Bool) -> Content
+
+    var body: some View { content(item, item.id == activity.activeID) }
+}
+
 /// The UIKit side of `FeedPager`.
 @MainActor
 public final class FeedPagerController<Item: Identifiable, Content: View>: UIViewController, UICollectionViewDelegate where Item.ID: Hashable & Sendable {
@@ -68,7 +87,9 @@ public final class FeedPagerController<Item: Identifiable, Content: View>: UIVie
     private var itemsByID: [Item.ID: Item] = [:]
     private var order: [Item.ID] = []
     private var active: Item.ID?
+    private let activity = FeedActivity<Item.ID>()
     private var lastUpcoming: [Item.ID] = []
+    private var lastPublishedActive: Item.ID?
 
     init(pager: FeedPager<Item, Content>) {
         self.pager = pager
@@ -99,11 +120,11 @@ public final class FeedPagerController<Item: Identifiable, Content: View>: UIVie
 
         let registration = UICollectionView.CellRegistration<UICollectionViewCell, Item.ID> { [weak self] cell, _, id in
             guard let self, let item = self.itemsByID[id] else { return }
-            let isActive = id == self.active
+            let activity = self.activity, content = self.pager.content
             cell.contentConfiguration = UIHostingConfiguration {
                 // A new identity per post: a reused cell never keeps the
                 // previous post's state (its picture or its player).
-                self.pager.content(item, isActive).id(id)
+                FeedPostContent(item: item, activity: activity, content: content).id(id)
             }
             .margins(.all, 0)
         }
@@ -119,7 +140,8 @@ public final class FeedPagerController<Item: Identifiable, Content: View>: UIVie
         guard isViewLoaded else { return }
         if pager.onRefresh != nil, collectionView.refreshControl == nil { addRefreshControl() }
         apply(pager.items)
-        if let wanted = pager.activeID, wanted != active, let index = order.firstIndex(of: wanted) {
+        if let wanted = pager.activeID, wanted != active, wanted != lastPublishedActive,
+           let index = order.firstIndex(of: wanted) {
             collectionView.scrollToItem(at: IndexPath(item: index, section: 0), at: .top, animated: false)
             setActive(wanted)
         }
@@ -130,14 +152,13 @@ public final class FeedPagerController<Item: Identifiable, Content: View>: UIVie
         let unique = items.filter { seen.insert($0.id).inserted }
         let ids = unique.map(\.id)
         itemsByID = Dictionary(uniqueKeysWithValues: unique.map { ($0.id, $0) })
-        var snapshot = dataSource.snapshot()
-        if ids != order {
-            snapshot = NSDiffableDataSourceSnapshot<Int, Item.ID>()
-            snapshot.appendSections([0])
-            snapshot.appendItems(ids)
-            order = ids
-        } else {
-            // Same posts, new values (a like, a caption): redraw what is on screen.
+        var snapshot = NSDiffableDataSourceSnapshot<Int, Item.ID>()
+        snapshot.appendSections([0])
+        snapshot.appendItems(ids)
+        let sameOrder = ids == order
+        order = ids
+        if sameOrder {
+            // Do not carry reconfiguration identifiers from older snapshots.
             let visible = collectionView.indexPathsForVisibleItems.compactMap { dataSource.itemIdentifier(for: $0) }
             snapshot.reconfigureItems(visible)
         }
@@ -158,17 +179,16 @@ public final class FeedPagerController<Item: Identifiable, Content: View>: UIVie
 
     private func setActive(_ id: Item.ID?) {
         guard id != active else { return }
-        let previous = active
         active = id
-        var snapshot = dataSource.snapshot()
-        let changed = [previous, id].compactMap { $0 }.filter { snapshot.indexOfItem($0) != nil }
-        if !changed.isEmpty {
-            snapshot.reconfigureItems(changed)
-            dataSource.apply(snapshot, animatingDifferences: false)
-        }
+        activity.activeID = id
+        pager.onActiveChanged(id.flatMap { itemsByID[$0] })
         if pager.activeID != id {
             // Not during a SwiftUI update.
-            DispatchQueue.main.async { [weak self] in self?.pager.activeID = id }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.active == id else { return }
+                self.lastPublishedActive = id
+                self.pager.activeID = id
+            }
         }
         reportUpcoming()
     }
@@ -184,6 +204,11 @@ public final class FeedPagerController<Item: Identifiable, Content: View>: UIVie
     }
 
     // MARK: - Scrolling
+
+    public func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard dataSource != nil else { return }
+        setActive(currentID())
+    }
 
     public func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
         setActive(currentID())

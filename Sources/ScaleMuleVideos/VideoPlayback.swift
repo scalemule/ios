@@ -4,33 +4,61 @@ import Combine
 import SwiftUI
 import UIKit
 import ScaleMuleCore
+import os.log
 
 /// An AVPlayer on a layer, sized by SwiftUI.
 public struct PlayerLayerView: UIViewRepresentable {
     let player: AVPlayer?
     var gravity: AVLayerVideoGravity
+    private let onReadyForDisplay: ((Bool) -> Void)?
 
-    public init(player: AVPlayer?, gravity: AVLayerVideoGravity = .resizeAspect) {
+    public init(player: AVPlayer?, gravity: AVLayerVideoGravity = .resizeAspect, onReadyForDisplay: ((Bool) -> Void)? = nil) {
         self.player = player
         self.gravity = gravity
+        self.onReadyForDisplay = onReadyForDisplay
     }
 
     public func makeUIView(context: Context) -> PlayerUIView {
         let view = PlayerUIView()
-        view.playerLayer.videoGravity = gravity
-        view.playerLayer.player = player
+        view.configure(player: player, gravity: gravity, onReady: onReadyForDisplay)
         view.backgroundColor = .clear
         return view
     }
 
     public func updateUIView(_ view: PlayerUIView, context: Context) {
-        if view.playerLayer.player !== player { view.playerLayer.player = player }
-        view.playerLayer.videoGravity = gravity
+        view.configure(player: player, gravity: gravity, onReady: onReadyForDisplay)
+    }
+
+    public static func dismantleUIView(_ view: PlayerUIView, coordinator: ()) {
+        view.configure(player: nil, gravity: view.playerLayer.videoGravity, onReady: nil)
     }
 
     public final class PlayerUIView: UIView {
         override public class var layerClass: AnyClass { AVPlayerLayer.self }
         public var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+        private var readiness: NSKeyValueObservation?
+        private var onReady: ((Bool) -> Void)?
+        private var generation = 0
+
+        func configure(player: AVPlayer?, gravity: AVLayerVideoGravity, onReady: ((Bool) -> Void)?) {
+            self.onReady = onReady
+            playerLayer.videoGravity = gravity
+            guard playerLayer.player !== player || readiness == nil else { return }
+            generation += 1
+            let generation = generation
+            readiness = nil
+            playerLayer.player = player
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.generation == generation else { return }
+                self.onReady?(false)
+            }
+            readiness = playerLayer.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak self] _, _ in
+                DispatchQueue.main.async {
+                    guard let self, self.generation == generation else { return }
+                    self.onReady?(self.playerLayer.isReadyForDisplay)
+                }
+            }
+        }
     }
 }
 
@@ -53,6 +81,30 @@ public final class LoopingPlayer {
     public var onLoop: (() -> Void)?
 
     public init() {}
+
+    /// Actually prime AVFoundation's media pipeline while paused. Merely
+    /// assigning an item and a buffer-duration hint does not perform a preroll.
+    func prepareStart(timeout: TimeInterval = 5) async -> Bool {
+        let seconds = timeout.isFinite ? min(max(0.1, timeout), 15) : 5
+        let deadline = Date().addingTimeInterval(seconds)
+        while player.status != .readyToPlay || player.currentItem?.status != .readyToPlay {
+            guard !Task.isCancelled, Date() < deadline, player.status != .failed,
+                  player.currentItem?.status != .failed else { return false }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        guard !Task.isCancelled, player.rate == 0 else { return false }
+        let watchdog = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.player.cancelPendingPrerolls()
+        }
+        defer { watchdog.cancel() }
+        return await withTaskCancellationHandler {
+            await player.preroll(atRate: 1)
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.player.cancelPendingPrerolls() }
+        }
+    }
 
     public func load(_ url: URL) {
         load(AVPlayerItem(url: url))
@@ -105,6 +157,7 @@ public final class LoopingPlayer {
     }
 
     public func stop() {
+        player.cancelPendingPrerolls()
         player.pause()
         loopObservation = nil
         pendingFile = nil
@@ -334,33 +387,28 @@ public final class VideoPlaybackModel: ObservableObject {
     /// (no download on every loop). Off: always stream.
     public var loopsFromLocalCopy = true
     private var localCopyTask: Task<Void, Never>?
-    private static let posters = NSCache<NSString, UIImage>()
 
     public init(videoId: String, videos: VideosService, poster: UIImage? = nil) {
         self.videoId = videoId
         self.videos = videos
-        self.poster = poster ?? Self.posters.object(forKey: videoId as NSString)
+        self.poster = poster ?? VideoPosterStore.shared.cached(videoId)
     }
 
     /// Forget the poster kept for `videoId` (the video was deleted).
     public static func forgetPoster(_ videoId: String) {
-        posters.removeObject(forKey: videoId as NSString)
+        VideoPosterStore.shared.forget(videoId)
     }
 
     /// A poster known on this phone (your own new post).
     public func setPoster(_ image: UIImage) {
         poster = image
-        Self.posters.setObject(image, forKey: videoId as NSString)
+        VideoPosterStore.shared.store(image, for: videoId)
     }
 
     /// Video's poster image, unless one is set.
     public func loadPoster() async {
-        guard poster == nil,
-              case .success(let info) = await videos.get(id: videoId),
-              let link = info.thumbnailUrl,
-              let url = URL(string: link, relativeTo: videos.client.configuration.baseURL),
-              let (data, _) = try? await URLSession.shared.data(from: url),
-              let image = UIImage(data: data) else { return }
+        guard poster == nil, let image = await VideoPosterStore.shared.load(videoId, videos: videos),
+              !Task.isCancelled else { return }
         setPoster(image)
     }
 
@@ -434,6 +482,12 @@ public final class VideoPlaybackModel: ObservableObject {
 
     /// Play a known file (a preview, or a fixture).
     public func play(file: URL) {
+        startTask?.cancel()
+        startTask = nil
+        playNow(file: file)
+    }
+
+    private func playNow(file: URL) {
         looping.load(file)
         looping.player.isMuted = isMuted
         looping.player.play()
@@ -480,33 +534,42 @@ public final class VideoPlaybackModel: ObservableObject {
     }
 
     private func start() async {
-        if let local = VideoFileCache.file(for: videoId) ?? VideoLoopCache.shared.cachedFile(for: videoId) {
-            play(file: local)
-            return
-        }
-        // Buffered while the previous post was on screen: starts at once.
-        if let ready = VideoPreloader.shared.take(videoId) {
+        guard !Task.isCancelled else { return }
+        // Keep the exact player prepared while the previous post was visible.
+        if let ready = await VideoPreloader.shared.acquire(videoId) {
+            guard !Task.isCancelled else { ready.stop(); return }
             objectWillChange.send()
             looping = ready
             // On screen now: buffer as much as the network allows.
-            for item in looping.player.items() { item.preferredForwardBufferDuration = 0 }
+            for item in looping.player.items() {
+                item.preferredForwardBufferDuration = 0
+                item.preferredPeakBitRate = 0
+            }
             looping.player.isMuted = isMuted
             looping.player.play()
             playerStarted()
             phase = .playing
             return
         }
+        guard !Task.isCancelled else { return }
+        if let local = VideoFileCache.file(for: videoId) ?? VideoLoopCache.shared.cachedFile(for: videoId) {
+            playNow(file: local)
+            return
+        }
         phase = .loading
         for _ in 0..<36 {
-            if Task.isCancelled { return }
-            switch await videos.get(id: videoId) {
+            guard !Task.isCancelled else { return }
+            let result = await videos.get(id: videoId)
+            guard !Task.isCancelled else { return }
+            switch result {
             case .success(let info) where info.isReady:
-                guard let url = await VideoLinkCache.shared.url(for: videoId, videos: videos) else {
+                let resolvedURL = await VideoLinkCache.shared.url(for: videoId, videos: videos)
+                guard !Task.isCancelled else { return }
+                guard let url = resolvedURL else {
                     phase = .failed
                     return
                 }
-                if Task.isCancelled { return }
-                play(file: url)
+                playNow(file: url)
                 return
             case .success(let info) where info.status == "failed":
                 phase = .failed
@@ -524,24 +587,29 @@ public final class VideoPlaybackModel: ObservableObject {
         if !Task.isCancelled { phase = .failed }
     }
 }
-/// Buffers the start of the next videos of a feed while the current one
-/// plays, so a swipe starts the next video at once. As TikTok does, only
-/// about the first second of each of the next four is fetched (most people
-/// swipe on early); once a video is on screen it buffers normally. Each is
-/// a muted, paused player that `VideoPlaybackModel` takes over; at most
-/// `capacity` are kept, the furthest dropped first, and all go on a memory
-/// warning.
+/// Prerolls nearby videos and hands the same player to the visible cell.
+/// `activate` must run before advancing `preload`'s window, so the player the
+/// user just reached is retained until its cell acquires it. At most `capacity`
+/// upcoming entries plus that one active handoff are retained.
 @MainActor
 public final class VideoPreloader {
     public static let shared = VideoPreloader()
-
-    /// Videos kept buffered ahead.
     public var capacity = 4
-    /// Seconds of each upcoming video fetched ahead.
     public var bufferSeconds: Double = 1
-    private var ready: [(id: String, player: LoopingPlayer)] = []
-    private var tasks: [String: Task<Void, Never>] = [:]
+    /// Bit-rate preference only while speculative; restored to adaptive on handoff.
+    public var preferredPeakBitRate: Double = 1_000_000
+    private final class Entry {
+        var player: LoopingPlayer?
+        var task: Task<Void, Never>?
+        var finished = false
+        var claimed = false
+        var prerolled = false
+    }
+    private var entries: [String: Entry] = [:]
+    private var wanted: [String] = []
+    private var activeVideoId: String?
     private var memoryWarning: NSObjectProtocol?
+    private let logger = Logger(subsystem: "com.scalemule.sdk", category: "VideoPreload")
 
     public init() {
         memoryWarning = NotificationCenter.default.addObserver(
@@ -551,63 +619,141 @@ public final class VideoPreloader {
         }
     }
 
-    /// Keep these videos buffered, nearest first; others are released.
+    deinit {
+        if let memoryWarning { NotificationCenter.default.removeObserver(memoryWarning) }
+    }
+
+    /// Called synchronously by the pager before its upcoming list changes.
+    public func activate(_ videoId: String?) {
+        activeVideoId = videoId
+        prune()
+    }
+
     public func preload(_ videoIds: [String], videos: VideosService) {
-        let wanted = Array(videoIds.prefix(capacity))
-        for (id, task) in tasks where !wanted.contains(id) {
-            task.cancel()
-            tasks.removeValue(forKey: id)
-        }
-        for entry in ready where !wanted.contains(entry.id) { entry.player.stop() }
-        ready.removeAll { !wanted.contains($0.id) }
-        for id in wanted where tasks[id] == nil && !ready.contains(where: { $0.id == id }) {
-            guard VideoFileCache.file(for: id) == nil, VideoLoopCache.shared.cachedFile(for: id) == nil else { continue }
-            tasks[id] = Task { [weak self] in
-                guard case .success(let info) = await videos.get(id: id), info.isReady,
-                      let url = await VideoLinkCache.shared.url(for: id, videos: videos),
-                      !Task.isCancelled else {
-                    self?.tasks.removeValue(forKey: id)
+        var seen = Set<String>()
+        wanted = Array(videoIds.filter { seen.insert($0).inserted }.prefix(max(0, capacity)))
+        prune()
+        for id in wanted where entries[id] == nil {
+            if let file = VideoFileCache.file(for: id) ?? VideoLoopCache.shared.cachedFile(for: id) {
+                schedule(id, url: file)
+                continue
+            }
+            let entry = Entry()
+            entries[id] = entry
+            entry.task = Task { [weak self] in
+                defer { entry.finished = true; entry.task = nil }
+                guard let self else { return }
+                let response = await videos.get(id: id)
+                guard !Task.isCancelled, self.entries[id] === entry else { return }
+                guard case .success(let info) = response, info.isReady else {
+                    if case .failure(let error) = response {
+                        self.logger.warning("Video preparation metadata request failed, HTTP \(error.statusCode ?? 0)")
+                    }
+                    if self.entries[id] === entry { self.entries.removeValue(forKey: id) }
                     return
                 }
-                self?.buffer(id, url: url)
+                async let poster = VideoPosterStore.shared.load(id, videos: videos, info: info)
+                guard let url = await VideoLinkCache.shared.url(for: id, videos: videos),
+                      !Task.isCancelled, self.entries[id] === entry else {
+                    if !Task.isCancelled { self.logger.warning("Video preparation could not resolve a playback URL") }
+                    if self.entries[id] === entry { self.entries.removeValue(forKey: id) }
+                    return
+                }
+                await self.prepare(entry, id: id, url: url)
+                _ = await poster
             }
         }
     }
 
-    /// The buffered player for `videoId`, handed over (no longer kept here).
+    /// Join in-flight preparation instead of starting the same requests again.
+    /// Once a player exists, take it immediately: the active cell can finish
+    /// buffering in the foreground without waiting for a speculative preroll.
+    public func acquire(_ videoId: String) async -> LoopingPlayer? {
+        if let player = take(videoId) { return player }
+        guard let entry = entries[videoId] else { return nil }
+        while entries[videoId] === entry, entry.player == nil, !entry.finished {
+            guard !Task.isCancelled else { return nil }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        guard !Task.isCancelled else { return nil }
+        return take(videoId)
+    }
+
     public func take(_ videoId: String) -> LoopingPlayer? {
-        guard let index = ready.firstIndex(where: { $0.id == videoId }) else { return nil }
-        return ready.remove(at: index).player
+        guard let entry = entries[videoId], let player = entry.player else { return nil }
+        entry.claimed = true
+        entries.removeValue(forKey: videoId)
+        entry.task?.cancel()
+        player.player.cancelPendingPrerolls()
+        return player
     }
 
-    /// Stop buffering `videoId` and release its player (the video was deleted).
     public func forget(_ videoId: String) {
-        tasks.removeValue(forKey: videoId)?.cancel()
-        for entry in ready where entry.id == videoId { entry.player.stop() }
-        ready.removeAll { $0.id == videoId }
+        guard let entry = entries.removeValue(forKey: videoId) else { return }
+        release(entry)
     }
 
-    /// Videos buffered right now (for tests and diagnostics).
-    public var bufferedIds: [String] { ready.map(\.id) }
+    /// Successfully prerolled entries, rather than merely allocated players.
+    public var bufferedIds: [String] { orderedIds.filter { entries[$0]?.prerolled == true } }
+    public var preparingIds: [String] { orderedIds.filter { entries[$0]?.prerolled == false } }
+    private var orderedIds: [String] {
+        let handoff = activeVideoId.flatMap { entries[$0] != nil && !wanted.contains($0) ? $0 : nil }
+        return (handoff.map { [$0] } ?? []) + wanted.filter { entries[$0] != nil }
+    }
 
     public func clear() {
-        for task in tasks.values { task.cancel() }
-        tasks.removeAll()
-        for entry in ready { entry.player.stop() }
-        ready.removeAll()
+        for entry in entries.values { release(entry) }
+        entries.removeAll()
+        wanted.removeAll()
+        activeVideoId = nil
+        VideoPosterStore.shared.trim()
     }
 
-    func buffer(_ id: String, url: URL) {
-        tasks.removeValue(forKey: id)
+    private func prune() {
+        let allowed = Set(wanted + (activeVideoId.map { [$0] } ?? []))
+        for id in Array(entries.keys) where !allowed.contains(id) { forget(id) }
+    }
+
+    private func release(_ entry: Entry) {
+        entry.task?.cancel()
+        if !entry.claimed { entry.player?.stop() }
+    }
+
+    private func schedule(_ id: String, url: URL) {
+        let entry = Entry()
+        entries[id] = entry
+        entry.task = Task { [weak self] in
+            defer { entry.finished = true; entry.task = nil }
+            await self?.prepare(entry, id: id, url: url)
+        }
+    }
+
+    private func prepare(_ entry: Entry, id: String, url: URL) async {
+        guard !Task.isCancelled, entries[id] === entry else { return }
         let looping = LoopingPlayer()
         looping.player.isMuted = true
         looping.player.automaticallyWaitsToMinimizeStalling = true
         let item = AVPlayerItem(url: url)
-        item.preferredForwardBufferDuration = bufferSeconds
+        item.preferredForwardBufferDuration = bufferSeconds.isFinite ? min(max(0.1, bufferSeconds), 5) : 1
         looping.load(item)
-        looping.player.pause()
-        ready.append((id, looping))
-        while ready.count > capacity { ready.removeFirst().player.stop() }
+        for copy in looping.player.items() {
+            copy.preferredForwardBufferDuration = item.preferredForwardBufferDuration
+            copy.preferredPeakBitRate = preferredPeakBitRate.isFinite ? max(0, preferredPeakBitRate) : 1_000_000
+        }
+        entry.player = looping
+        let prepared = await looping.prepareStart()
+        guard !entry.claimed else { return }
+        guard !Task.isCancelled, entries[id] === entry else { looping.stop(); return }
+        entry.prerolled = prepared
+    }
+
+    /// Known URLs (also used by real-file playback tests).
+    func buffer(_ id: String, url: URL) {
+        forget(id)
+        wanted = Array((wanted.filter { $0 != id } + [id]).suffix(max(0, capacity)))
+        prune()
+        guard wanted.contains(id) else { return }
+        schedule(id, url: url)
     }
 }
 #endif
