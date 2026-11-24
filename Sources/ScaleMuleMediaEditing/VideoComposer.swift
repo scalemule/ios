@@ -48,7 +48,7 @@ public enum VideoComposerError: LocalizedError, Sendable {
 }
 
 /// Joins clips, trims, applies a look and mutes; exports a compact file for
-/// posting (1080p HEVC, about 4-6 MB per 10 s) with a poster frame. The same
+/// posting (1080p HEVC, about 4.5 MB per 10 s, streamable as it is) with a poster frame. The same
 /// composition drives the live preview while editing.
 ///
 /// Clips must share one orientation (`CaptureController` records a whole
@@ -104,20 +104,40 @@ public enum VideoComposer {
     /// The finished file, at most `maxSeconds` long. `location` is written into
     /// the file for ScaleMule Video to keep privately (it serves copies without
     /// it); nothing else in the file says where it was made.
-    public static func export(_ edit: VideoEdit, maxSeconds: Double = 60, location: CaptureLocation? = nil) async throws -> PreparedVideo {
+    ///
+    /// With `encoding` (the default), the file is one ScaleMule Video streams
+    /// as it is, without encoding on the server (`VideoEncoding.streaming`:
+    /// HEVC about 3.5 Mbps at 1080p, a keyframe every 2 s). Should that fail
+    /// on a device, or with `encoding: nil`, Apple's HEVC 1080p preset is used.
+    public static func export(_ edit: VideoEdit, maxSeconds: Double = 60, location: CaptureLocation? = nil, encoding: VideoEncoding? = .streaming) async throws -> PreparedVideo {
         let built = try await build(edit)
         let output = FileManager.default.temporaryDirectory.appendingPathComponent("scalemule-\(UUID().uuidString).mp4")
-        let preset = AVAssetExportSession.allExportPresets().contains(AVAssetExportPresetHEVC1920x1080)
-            ? AVAssetExportPresetHEVC1920x1080 : AVAssetExportPreset1920x1080
-        guard let session = AVAssetExportSession(asset: built.composition, presetName: preset) else {
-            throw VideoComposerError.exportFailed("no export session")
-        }
         let range = trimmedRange(edit, total: built.composition.duration, maxSeconds: maxSeconds)
-        session.timeRange = range
-        session.videoComposition = built.videoComposition
-        session.shouldOptimizeForNetworkUse = true
-        if let location { session.metadata = captureMetadata(location) }
-        try await run(session, to: output)
+        let metadata = location.map(captureMetadata) ?? []
+        var encoded = false
+        if let encoding {
+            do {
+                try await StreamingVideoEncoder.encode(
+                    built.composition, videoComposition: built.videoComposition, timeRange: range,
+                    metadata: metadata, encoding: encoding, to: output
+                )
+                encoded = true
+            } catch {
+                try? FileManager.default.removeItem(at: output)
+            }
+        }
+        if !encoded {
+            let preset = AVAssetExportSession.allExportPresets().contains(AVAssetExportPresetHEVC1920x1080)
+                ? AVAssetExportPresetHEVC1920x1080 : AVAssetExportPreset1920x1080
+            guard let session = AVAssetExportSession(asset: built.composition, presetName: preset) else {
+                throw VideoComposerError.exportFailed("no export session")
+            }
+            session.timeRange = range
+            session.videoComposition = built.videoComposition
+            session.shouldOptimizeForNetworkUse = true
+            if !metadata.isEmpty { session.metadata = metadata }
+            try await run(session, to: output)
+        }
 
         let exported = AVURLAsset(url: output)
         let generator = AVAssetImageGenerator(asset: exported)

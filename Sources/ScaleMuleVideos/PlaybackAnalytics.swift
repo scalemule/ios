@@ -47,6 +47,11 @@ public final class PlaybackAnalytics {
     private var lastHeartbeatAt = Date()
     private var finished = false
     private static let network = NetworkKind()
+    /// Bytes of items already left (each loop is a new item) and of copies
+    /// downloaded for looping.
+    private var bytesBefore: Int64 = 0
+    private var codecFound: (source: URL, codec: String?, variants: [Int: String])?
+    private var codecTask: Task<Void, Never>?
 
     /// `send` delivers each event (defaults to `VideosService.track`).
     public init(videoId: String, sessionId: String = PlaybackAnalytics.newSessionId(), send: @escaping (PlaybackEvent) -> Void) {
@@ -156,10 +161,71 @@ public final class PlaybackAnalytics {
         replacing = true
     }
 
+    /// A copy of the video was downloaded for looping (`bytes` long).
+    public func downloaded(bytes: Int64) {
+        bytesBefore += max(0, bytes)
+    }
+
+    static func bytes(of item: AVPlayerItem) -> Int64 {
+        (item.accessLog()?.events ?? []).reduce(Int64(0)) { $0 + max(0, $1.numberOfBytesTransferred) }
+    }
+
+    /// Where the playing copy is: the stream, a copy kept for looping
+    /// (`VideoLoopCache`) or the poster's own upload (`VideoFileCache`).
+    nonisolated static func playbackSource(_ url: URL?) -> String? {
+        guard let url else { return nil }
+        guard url.isFileURL else { return "stream" }
+        let path = url.path
+        if path.contains("/scalemule-video-loops/") { return "local_copy" }
+        if path.contains("/scalemule-videos/") { return "own_upload" }
+        return "file"
+    }
+
+    nonisolated static func codecName(_ type: FourCharCode) -> String? {
+        switch type {
+        case kCMVideoCodecType_HEVC, kCMVideoCodecType_HEVCWithAlpha, 0x6865_7631 /* hev1 */: return "hevc"
+        case kCMVideoCodecType_H264: return "h264"
+        default: return type == 0 ? nil : "other"
+        }
+    }
+
+    /// The codec of what plays now: the file's video track, or for a stream
+    /// the variant whose BANDWIDTH the player reports.
+    private func codec(of item: AVPlayerItem) -> String? {
+        guard let asset = item.asset as? AVURLAsset else { return nil }
+        if let found = codecFound, found.source == asset.url {
+            if let codec = found.codec { return codec }
+            let bitrate = item.accessLog()?.events.last(where: { $0.indicatedBitrate > 0 })?.indicatedBitrate
+            return bitrate.flatMap { found.variants[Int($0)] }
+        }
+        guard codecTask == nil else { return nil }
+        let url = asset.url
+        codecTask = Task { [weak self] in
+            var codec: String?
+            var variants: [Int: String] = [:]
+            if url.isFileURL {
+                if let track = try? await asset.loadTracks(withMediaType: .video).first,
+                   let format = try? await track.load(.formatDescriptions).first {
+                    codec = Self.codecName(CMFormatDescriptionGetMediaSubType(format))
+                }
+            } else if let list = try? await asset.load(.variants) {
+                for variant in list {
+                    guard let peak = variant.peakBitRate, let type = variant.videoAttributes?.codecTypes.first else { continue }
+                    variants[Int(peak)] = Self.codecName(type)
+                }
+            }
+            guard let self else { return }
+            self.codecFound = (url, codec, variants)
+            self.codecTask = nil
+        }
+        return nil
+    }
+
     /// A looping player (AVPlayerLooper) moved to the next copy of the video:
     /// the loop that was playing ended.
     private func itemChanged(to item: AVPlayerItem?) {
         guard let item, item !== measuredItem else { return }
+        if let left = measuredItem { bytesBefore += Self.bytes(of: left) }
         if replacing {
             replacing = false
             measuredItem = item
@@ -248,6 +314,9 @@ public final class PlaybackAnalytics {
             "player": "ios-avplayer",
         ]
         if let item = player?.currentItem {
+            values["bytes_transferred"] = bytesBefore + Self.bytes(of: item)
+            if let source = Self.playbackSource((item.asset as? AVURLAsset)?.url) { values["playback_source"] = source }
+            if let codec = codec(of: item) { values["codec"] = codec }
             let length = duration(item)
             if length > 0 {
                 values["duration_seconds"] = (length * 10).rounded() / 10
@@ -291,6 +360,8 @@ public final class PlaybackAnalytics {
     }
 
     private func detachObservers() {
+        codecTask?.cancel()
+        codecTask = nil
         statusObservation?.invalidate()
         statusObservation = nil
         itemObservation?.invalidate()
