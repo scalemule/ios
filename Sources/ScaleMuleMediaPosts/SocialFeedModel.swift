@@ -30,6 +30,8 @@ public final class SocialFeedModel: ObservableObject {
     public enum Filter: String, CaseIterable, Sendable {
         /// Everyone's posts: the app's Social feed.
         case everyone = "all"
+        /// Only posts by people the person follows.
+        case following
         /// Around where the person is (iOS).
         case nearby
         /// The person's own posts.
@@ -78,6 +80,11 @@ public final class SocialFeedModel: ObservableObject {
     @Published public private(set) var place: Place?
     /// Posts the person likes: what Social said at load (`likedByMe`), then their taps.
     @Published public private(set) var likedIds: Set<String> = []
+    /// Comment counts that changed since the post was loaded (a comment
+    /// written or deleted here), by post id.
+    @Published public private(set) var commentCounts: [String: Int] = [:]
+    /// Learns from every page which authors the person follows.
+    public var follows: FollowStore?
 
     public let pageSize: Int
     /// Seconds between looks for new posts while polling.
@@ -280,6 +287,17 @@ public final class SocialFeedModel: ObservableObject {
         }
     }
 
+    // MARK: - Comments
+
+    /// The count to show next to the comment button.
+    public func commentCount(_ post: MediaPost) -> Int { commentCounts[post.id] ?? post.comments }
+
+    /// A comment was written (+1) or deleted (-1) under a post.
+    public func adjustComments(postId: String, by delta: Int) {
+        let current = commentCounts[postId] ?? items.first { $0.id == postId }?.comments ?? 0
+        commentCounts[postId] = max(0, current + delta)
+    }
+
     // MARK: - Views and actions (analytics)
 
     /// Tell the model which post is on screen (call it from `FeedPager`'s
@@ -407,7 +425,9 @@ public final class SocialFeedModel: ObservableObject {
     private func fromServer(_ list: [MediaPost]) -> [MediaPost] {
         for post in list {
             if post.likedByMe { likedIds.insert(post.id) } else { likedIds.remove(post.id) }
+            commentCounts[post.id] = nil
         }
+        follows?.note(posts: list)
         return list
     }
 
@@ -434,8 +454,10 @@ public final class SocialFeedModel: ObservableObject {
     /// One look for posts newer than those shown (everyone's feed only). An
     /// empty feed shows them at once; otherwise they wait in `newItems`.
     public func checkForNewPosts() async {
-        guard !isFixed, let social, filter == .everyone, !isLoading else { return }
-        guard case .success(let posts) = await social.feed(page: 1, perPage: pageSize) else { return }
+        guard !isFixed, let social, filter == .everyone || filter == .following, !isLoading else { return }
+        let asked = filter
+        let scope: FeedScope = asked == .following ? .following : .everyone
+        guard case .success(let posts) = await social.feed(scope: scope, page: 1, perPage: pageSize), filter == asked else { return }
         let known = Set(items.map(\.id)).union(newItems.map(\.id))
         let fresh = posts
             .compactMap { MediaPost(post: $0, currentUserId: currentUserId) }
@@ -512,6 +534,11 @@ public final class SocialFeedModel: ObservableObject {
         switch filter {
         case .everyone:
             let result = await social.feed(page: nextPage, perPage: pageSize)
+            try stillCurrent(generation)
+            return try page(result).compactMap { MediaPost(post: $0, currentUserId: userId) }
+
+        case .following:
+            let result = await social.feed(scope: .following, page: nextPage, perPage: pageSize)
             try stillCurrent(generation)
             return try page(result).compactMap { MediaPost(post: $0, currentUserId: userId) }
 
