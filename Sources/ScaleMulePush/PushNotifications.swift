@@ -238,7 +238,7 @@ public enum PushPermission: String, Sendable {
             old = (id, user, session)
         }
         guard let old else { return }
-        let result = await service.unregister(id: old.id, session: old.session)
+        let result = await service.unregister(id: old.id, userId: old.userId, originalSession: old.session)
         if result.isSuccess {
             binding = nil
             defaults.removeObject(forKey: registrationKey)

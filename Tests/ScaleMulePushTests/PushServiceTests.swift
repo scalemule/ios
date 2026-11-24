@@ -76,6 +76,46 @@ final class PushServiceTests: XCTestCase {
         XCTAssertFalse(invalid.isSuccess)
     }
 
+    func testCleanupUsesTheRefreshedSessionOfTheSameAccount() async throws {
+        let app = await signedIn()
+        await app.sessionManager.rememberUser(AuthUser(id: user))
+        try await app.sessionManager.refreshSession("refreshed-session", expiresAt: Date().addingTimeInterval(3600))
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.httpMethod, "DELETE")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer refreshed-session")
+            return TestFixtures.mockResponse(statusCode: 204, json: "")
+        }
+        let result = await PushService(app: app).unregister(id: id, userId: user, originalSession: "expired-original")
+        XCTAssertTrue(result.isSuccess)
+    }
+
+    func testCleanupKeepsThePreviousAccountsSessionAfterAnAccountSwitch() async {
+        let app = await signedIn()
+        await app.sessionManager.rememberUser(AuthUser(id: "019b0000-0000-7000-8000-000000000003"))
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer previous-account-session")
+            return TestFixtures.mockResponse(statusCode: 204, json: "")
+        }
+        let result = await PushService(app: app).unregister(id: id, userId: user, originalSession: "previous-account-session")
+        XCTAssertTrue(result.isSuccess)
+    }
+
+    func testCleanupRetriesOriginalSessionIfCredentialsChangeDuringTheOwnerCheck() async {
+        let app = await signedIn()
+        await app.sessionManager.rememberUser(AuthUser(id: user))
+        var headers: [String] = []
+        MockURLProtocol.requestHandler = { request in
+            headers.append(request.value(forHTTPHeaderField: "Authorization") ?? "")
+            if headers.count == 1 {
+                return TestFixtures.mockResponse(statusCode: 403, json: "{\"error\":{\"code\":\"FORBIDDEN\",\"message\":\"Not the token owner\"}}")
+            }
+            return TestFixtures.mockResponse(statusCode: 204, json: "")
+        }
+        let result = await PushService(app: app).unregister(id: id, userId: user, originalSession: "original-owner-session")
+        XCTAssertTrue(result.isSuccess)
+        XCTAssertEqual(headers, ["Bearer session-for-current-user", "Bearer original-owner-session"])
+    }
+
     func testExplicitOptInReenablesServerDevicePreference() async {
         let app = await signedIn()
         MockURLProtocol.requestHandler = { request in

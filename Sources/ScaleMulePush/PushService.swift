@@ -65,6 +65,24 @@ public final class PushService: ServiceModule, @unchecked Sendable {
         return await unregister(id: id, session: session)
     }
 
+    /// Prefer a refreshed session for the same account. Keep the original
+    /// session available during an account switch; a new account must never
+    /// be used to authorize cleanup of the previous account's device.
+    func unregister(id: String, userId: String, originalSession: String) async -> ApiResponse<Void> {
+        var session = originalSession
+        if let remembered = await client.sessionManager.rememberedUser(), remembered.id == userId,
+           let latest = await client.sessionManager.sessionToken {
+            session = latest
+        }
+        let result = await unregister(id: id, session: session)
+        // A concurrent sign-in may replace credentials between the two reads.
+        // The server's ownership check rejects that session; retry the binding's.
+        if result.error?.statusCode == 403, session != originalSession {
+            return await unregister(id: id, session: originalSession)
+        }
+        return result
+    }
+
     func unregister(id: String, session: String) async -> ApiResponse<Void> {
         guard let uuid = UUID(uuidString: id) else {
             return .failure(ApiError(code: .unknown, message: "Invalid push registration ID."))
