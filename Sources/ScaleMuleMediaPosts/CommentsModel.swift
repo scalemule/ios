@@ -26,9 +26,9 @@ public final class CommentsModel: ObservableObject {
     public let pageSize: Int
     /// The longest comment Social takes.
     public static let maxLength = 2000
-    /// Where a comment just written goes: the top (the server lists newest
-    /// first) or the bottom.
-    public var newestFirst = true
+    /// Where a comment just written goes: the bottom (ScaleMule Social lists
+    /// comments oldest first), or the top for an app that shows them reversed.
+    public var newestFirst = false
     /// The post's comment count changed by this much (+1 sent, -1 deleted).
     public var onCountChange: ((Int) -> Void)?
 
