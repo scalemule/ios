@@ -36,7 +36,7 @@ final class VideoHandoffTests: XCTestCase {
         XCTAssertTrue(ready, "the real AVPlayerLayer must report a drawable frame")
         XCTAssertEqual(view.playerLayer.opacity, 1)
         first.stop()
-        XCTAssertEqual(view.playerLayer.opacity, 0, "stopping the same player must restore the backing poster")
+        XCTAssertEqual(view.playerLayer.opacity, 1, "a queue transition must not reapply the first-frame poster")
         first.load(clip)
         first.player.play()
         let restartDeadline = Date().addingTimeInterval(5)
@@ -50,6 +50,16 @@ final class VideoHandoffTests: XCTestCase {
         first.stop()
         second.stop()
         window.isHidden = true
+    }
+
+    @MainActor
+    func testEndingTheViewingSessionReplacesItsPlayerIdentity() {
+        let (app, _) = createTestClient()
+        let model = VideoPlaybackModel(videoId: UUID().uuidString, videos: VideosService(app: app))
+        let player = model.player
+        model.stop()
+        XCTAssertFalse(model.player === player, "only a new viewing session should reset first-frame readiness")
+        XCTAssertNil(model.player.currentItem)
     }
 
     @MainActor

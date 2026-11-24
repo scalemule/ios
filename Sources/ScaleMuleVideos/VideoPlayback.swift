@@ -12,6 +12,8 @@ public struct PlayerLayerView: UIViewRepresentable {
     var gravity: AVLayerVideoGravity
     private let onReadyForDisplay: ((Bool) -> Void)?
 
+    /// First-frame readiness stays true across queued items. Assign a new
+    /// player for a new viewing session instead of resetting it at loop boundaries.
     public init(player: AVPlayer?, gravity: AVLayerVideoGravity = .resizeAspect, onReadyForDisplay: ((Bool) -> Void)? = nil) {
         self.player = player
         self.gravity = gravity
@@ -37,7 +39,6 @@ public struct PlayerLayerView: UIViewRepresentable {
         override public class var layerClass: AnyClass { AVPlayerLayer.self }
         public var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
         private var readiness: NSKeyValueObservation?
-        private var currentItemObservation: NSKeyValueObservation?
         private var onReady: ((Bool) -> Void)?
         private var generation = 0
         private var hasDisplayedFrame = false
@@ -49,7 +50,6 @@ public struct PlayerLayerView: UIViewRepresentable {
             generation += 1
             let generation = generation
             readiness = nil
-            currentItemObservation = nil
             hasDisplayedFrame = false
             // The poster stays behind this surface. Cover an empty replacement
             // synchronously, without waiting for a SwiftUI state/render pass.
@@ -62,14 +62,6 @@ public struct PlayerLayerView: UIViewRepresentable {
                     DispatchQueue.main.async { self?.displayReadinessChanged(generation: generation) }
                 }
             }
-            currentItemObservation = player?.observe(\.currentItem, options: [.new]) { [weak self] _, change in
-                let emptied = change.newValue.flatMap { $0 } == nil
-                if Thread.isMainThread {
-                    MainActor.assumeIsolated { self?.displayReadinessChanged(generation: generation, queueEmptied: emptied) }
-                } else {
-                    DispatchQueue.main.async { self?.displayReadinessChanged(generation: generation, queueEmptied: emptied) }
-                }
-            }
         }
 
         private func setVideoVisible(_ visible: Bool) {
@@ -79,9 +71,9 @@ public struct PlayerLayerView: UIViewRepresentable {
             CATransaction.commit()
         }
 
-        private func displayReadinessChanged(generation: Int, queueEmptied: Bool = false) {
+        private func displayReadinessChanged(generation: Int) {
             guard self.generation == generation else { return }
-            if queueEmptied || playerLayer.player?.currentItem == nil { hasDisplayedFrame = false }
+            if playerLayer.player == nil { hasDisplayedFrame = false }
             else if playerLayer.isReadyForDisplay { hasDisplayedFrame = true }
             // A queued loop can briefly reset isReadyForDisplay for its next
             // item. Keep the existing video surface and its last frame instead
@@ -514,6 +506,9 @@ public final class VideoPlaybackModel: ObservableObject {
         localCopyTask = nil
         captionClock.detach()
         looping.stop()
+        // A new viewing session gets a new player identity. Transient queue
+        // changes inside an existing session must not put its poster back.
+        looping = LoopingPlayer()
         phase = .idle
     }
 
