@@ -170,12 +170,12 @@ final class SocialPeopleModelsTests: XCTestCase {
         XCTAssertFalse(empty, "nothing to send")
         let sent = await model.send("  mine ")
         XCTAssertTrue(sent)
-        XCTAssertEqual(model.comments.first?.id, "c3", "the new comment is on top")
-        XCTAssertTrue(model.isMine(model.comments[0]))
+        XCTAssertEqual(model.comments.last?.id, "c3", "the new comment is last, as the server lists them")
+        XCTAssertTrue(model.isMine(model.comments[2]))
 
         // The post is mine: I may delete anyone's comment, and its replies go with it.
-        XCTAssertTrue(model.canDelete(model.comments[1]))
-        await model.delete(model.comments[1])
+        XCTAssertTrue(model.canDelete(model.comments[0]))
+        await model.delete(model.comments[0])
         XCTAssertEqual(model.comments.map(\.id), ["c3"])
         XCTAssertEqual(deltas, [1, -2])
     }

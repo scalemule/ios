@@ -16,6 +16,12 @@ public struct PublicProfile: Sendable, Equatable {
         self.username = username
         self.avatarURL = avatarURL
     }
+
+    /// The first word of the name ("Maya" of "Maya Okafor"), for apps that
+    /// show people by first name only, as ScaleMule's notifications do.
+    public var firstName: String? {
+        name?.split(whereSeparator: \.isWhitespace).first.map(String.init)
+    }
 }
 
 /// A small cached directory of other people's public profiles

@@ -42,6 +42,16 @@ final class PublicProfilesTests: XCTestCase {
         return PublicProfiles(client: app.client, ttl: 600, missTTL: 60, now: { clock.now })
     }
 
+    func testFirstNameIsTheFirstWord() {
+        func profile(_ name: String?) -> PublicProfile { PublicProfile(id: "u", name: name, username: nil, avatarURL: nil) }
+        XCTAssertEqual(profile("Maya Okafor").firstName, "Maya")
+        XCTAssertEqual(profile("  Иван  Петров").firstName, "Иван")
+        XCTAssertEqual(profile("李 雷").firstName, "李")
+        XCTAssertEqual(profile("Zoë").firstName, "Zoë")
+        XCTAssertNil(profile(nil).firstName)
+        XCTAssertNil(profile("   ").firstName)
+    }
+
     func testLooksUpOnceAndServesFromCacheUntilTTL() async {
         let clock = TestClock()
         let profiles = await makeDirectory(clock: clock)
