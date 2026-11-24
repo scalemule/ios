@@ -367,6 +367,13 @@ FeedPager(items: posts, activeID: $activeId, lookahead: 4, loadMoreDistance: 8,
   keeps the poster and loading state above the attached player until its
   actual first frame is drawable. Preloading never guarantees immediate playback.
 
+`RemotePhotoView` and `RemoteVideoView` accept `onReady` callbacks for
+content-dependent onboarding. A photo reports readiness when its decoded
+image appears; a video reports a visible poster or its first drawable frame.
+Also check the pager's `isActive` and the feed's visibility: prefetched cells
+can appear in the view hierarchy before they are the visible post. Loading,
+empty and error states do not report content readiness.
+
 ## Building a photo and video feed app
 
 The whole stack of a TikTok/Instagram-style app (Firehosy runs on exactly

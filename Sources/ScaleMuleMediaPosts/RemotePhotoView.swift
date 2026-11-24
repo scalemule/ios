@@ -49,6 +49,7 @@ public struct RemotePhotoView: View {
     private let labels: Labels
     private let loader: Loader?
     private let onTap: (UIImage) -> Void
+    private let onReady: (() -> Void)?
 
     @State private var image: UIImage?
     @State private var state: LoadState = .loading
@@ -58,6 +59,8 @@ public struct RemotePhotoView: View {
     /// - Parameters:
     ///   - wide: the post is landscape (from its size): it is fetched at
     ///     `requestWidth(wide:)` = 1600 instead of 1080.
+    ///   - onReady: a decoded photo appeared in the view hierarchy. Pagers
+    ///     should also check that this post is active before presenting UI.
     ///   - onTap: a tap on the loaded picture (for example, open it whole).
     public init(
         photoId: String,
@@ -68,6 +71,7 @@ public struct RemotePhotoView: View {
         wideStyle: WideStyle = .crop,
         labels: Labels = Labels(),
         loader: Loader? = nil,
+        onReady: (() -> Void)? = nil,
         onTap: @escaping (UIImage) -> Void = { _ in }
     ) {
         self.photoId = photoId
@@ -79,6 +83,7 @@ public struct RemotePhotoView: View {
         self.labels = labels
         self.loader = loader
         self.onTap = onTap
+        self.onReady = onReady
         // Preloaded (or seen before): shown in the first frame, no spinner.
         let cached = cache.image(for: PhotoImageCache.key(for: photoId))
         _image = State(initialValue: cached.flatMap { Self.bigEnough($0, for: Self.requestWidth(wide: wide)) ? $0 : nil })
@@ -110,7 +115,7 @@ public struct RemotePhotoView: View {
     public var body: some View {
         ZStack {
             if let image {
-                loaded(image)
+                loaded(image).onAppear { onReady?() }
             } else {
                 switch state {
                 case .loading:

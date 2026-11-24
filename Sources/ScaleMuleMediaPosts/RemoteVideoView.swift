@@ -59,6 +59,7 @@ public struct RemoteVideoView: View {
     private let posterCache: PhotoImageCache?
     private let localFile: URL?
     private let labels: Labels
+    private let onReady: (() -> Void)?
     private let captionBottomInset: CGFloat
     private let captionOut: Binding<String?>?
 
@@ -73,6 +74,8 @@ public struct RemoteVideoView: View {
     ///     new video (`PhotoImageCache.key(for: videoId)`).
     ///   - localFile: play this file instead of the stream (previews, UI tests).
     ///   - muteKey: the UserDefaults key remembering the mute choice.
+    ///   - onReady: a poster appeared or the player displayed its first frame;
+    ///     pagers should also check that the post is active.
     ///   - caption: receives the caption to show (nil when none or hidden);
     ///     the view then draws none itself.
     ///   - captionBottomInset: where the view draws captions itself, from the bottom.
@@ -88,6 +91,7 @@ public struct RemoteVideoView: View {
         localFile: URL? = nil,
         muteKey: String = "feed.videosMuted",
         labels: Labels = Labels(),
+        onReady: (() -> Void)? = nil,
         caption: Binding<String?>? = nil,
         captionBottomInset: CGFloat = 150,
         captionPreferences: CaptionPreferences = .shared
@@ -104,6 +108,7 @@ public struct RemoteVideoView: View {
         self.posterCache = posterCache
         self.localFile = localFile
         self.labels = labels
+        self.onReady = onReady
         _muted = AppStorage(wrappedValue: false, muteKey)
         _model = StateObject(wrappedValue: VideoPlaybackModel(videoId: videoId, videos: videos))
     }
@@ -120,6 +125,7 @@ public struct RemoteVideoView: View {
         localFile: URL? = nil,
         muteKey: String = "feed.videosMuted",
         labels: Labels = Labels(),
+        onReady: (() -> Void)? = nil,
         caption: Binding<String?>? = nil,
         captionBottomInset: CGFloat = 150,
         captionPreferences: CaptionPreferences = .shared
@@ -130,7 +136,7 @@ public struct RemoteVideoView: View {
             videoId: post.mediaId, size: size, isActive: isActive, videos: videos, landscape: landscape,
             topInset: topInset, muteButtonTop: muteButtonTop, posterCache: posterCache,
             localFile: localFile, muteKey: muteKey, labels: labels,
-            caption: caption, captionBottomInset: captionBottomInset, captionPreferences: captionPreferences
+            onReady: onReady, caption: caption, captionBottomInset: captionBottomInset, captionPreferences: captionPreferences
         )
     }
 
@@ -161,6 +167,7 @@ public struct RemoteVideoView: View {
                         .frame(width: size.width, height: size.height)
                         .clipped()
                         .accessibilityIdentifier("videoPoster")
+                        .onAppear { onReady?() }
                 } else {
                     Color(white: 0.12)
                     Image(systemName: "video.fill")
@@ -212,6 +219,7 @@ public struct RemoteVideoView: View {
                     .padding(.bottom, captionBottomInset)
             }
         }
+        .onChange(of: firstFrameReady) { ready in if ready { onReady?() } }
         .onChange(of: shownCaption) { value in captionOut?.wrappedValue = value }
         .onDisappear { captionOut?.wrappedValue = nil }
         .task {
