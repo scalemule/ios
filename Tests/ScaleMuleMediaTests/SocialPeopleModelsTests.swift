@@ -110,6 +110,35 @@ final class SocialPeopleModelsTests: XCTestCase {
         XCTAssertNil(older.authorFollowed)
     }
 
+    func testShowingGivenPostsKeepsLikesAndLoadsNothing() async {
+        let (social, _) = services()
+        let feed = SocialFeedModel()
+        let follows = FollowStore()
+        follows.attach(social: social, currentUserId: me)
+        feed.follows = follows
+        let liked = try! JSONDecoder().decode(SocialPost.self, from: Data("""
+        {"id": "p9", "user_id": "\(them)", "content": "x", "media_ids": ["m9"], "visibility": "public", "liked_by_me": true,
+         "likes_count": 3, "comments_count": 2, "shares_count": 0, "created_at": "2026-11-24T10:00:00Z", "viewer_follows_author": true}
+        """.utf8))
+        let posts = [liked, post("p8", by: them)].compactMap { MediaPost(post: $0, currentUserId: me) }
+        MockURLProtocol.requestHandler = { _ in
+            XCTFail("a given list is not loaded from the server")
+            return TestFixtures.envelopedResponse(json: "{\"posts\": []}")
+        }
+        feed.showPosts(posts)
+        await feed.loadFeed()
+        await feed.loadMore()
+        XCTAssertEqual(feed.items.map(\.id), ["p9", "p8"])
+        XCTAssertTrue(feed.isLiked(posts[0]))
+        XCTAssertFalse(feed.isLiked(posts[1]))
+        XCTAssertEqual(feed.commentCount(posts[0]), 2)
+        feed.adjustComments(postId: "p9", by: 1)
+        XCTAssertEqual(feed.commentCount(posts[0]), 3)
+        feed.adjustComments(postId: "p9", by: -9)
+        XCTAssertEqual(feed.commentCount(posts[0]), 0, "never below zero")
+        XCTAssertEqual(follows.isFollowing(them), true, "the posts say the viewer follows their author")
+    }
+
     // MARK: Comments
 
     func testCommentsLoadSendAndDelete() async {

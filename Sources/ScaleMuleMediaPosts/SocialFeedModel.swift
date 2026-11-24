@@ -170,6 +170,20 @@ public final class SocialFeedModel: ObservableObject {
         isLoading = false
     }
 
+    /// Show exactly these posts and load nothing more: a person's posts
+    /// opened from their page, or one post opened from the inbox. Likes,
+    /// comments counts, reports and blocks work as in a loaded feed (call
+    /// `attach` first).
+    public func showPosts(_ posts: [MediaPost]) {
+        isFixed = true
+        items = visible(fromServer(posts))
+        newItems = []
+        hasMore = false
+        hasLoaded = true
+        isLoading = false
+        error = nil
+    }
+
     // MARK: - Saved first page
 
     private var savedPageURL: URL? {
