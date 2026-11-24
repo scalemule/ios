@@ -6,6 +6,49 @@ import ScaleMuleTestHelpers
 @testable import ScaleMuleVideos
 
 final class VideoLoopCacheTests: XCTestCase {
+    @MainActor
+    func testExistingPlaybackKeepsItsSourceUntilReactivationUsesTheDownloadedCache() async throws {
+        PlaybackAnalytics.isEnabled = false
+        defer { PlaybackAnalytics.isEnabled = true }
+        let fixture = try XCTUnwrap(Bundle.module.url(forResource: "fragmented", withExtension: "mp4", subdirectory: "Fixtures"))
+        let bytes = try Data(contentsOf: fixture)
+        let (app, session) = createTestClient()
+        let master = self.master, media = self.media
+        MockURLProtocol.requestHandler = { request in
+            let url = request.url!
+            let ok = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            if url.path.hasSuffix("/playlist.m3u8") { return (ok, Data(master.utf8)) }
+            if url.path.hasSuffix("/1080p/index.m3u8") { return (ok, Data(media.utf8)) }
+            if url.path.hasSuffix("segments.m4s") { return (ok, bytes) }
+            return TestFixtures.mockResponse(statusCode: 404, json: "{}")
+        }
+        let place = folder()
+        defer { try? FileManager.default.removeItem(at: place) }
+        let cache = VideoLoopCache(folder: place, session: session)
+        let id = UUID().uuidString
+        let model = VideoPlaybackModel(videoId: id, videos: VideosService(app: app), loopCache: cache)
+        model.isMuted = true
+        model.loadsCaptions = false
+        model.play(file: fixture)
+        defer { model.stop() }
+        let stream = URL(string: "https://api.example.com/v1/videos/v1/playlist.m3u8")!
+        let downloaded = await cache.file(for: id, stream: stream)
+        let file = try XCTUnwrap(downloaded)
+        // A completed background download must not replace the visible loop.
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline {
+            XCTAssertEqual((model.player.currentItem?.asset as? AVURLAsset)?.url, fixture)
+            try await Task.sleep(for: .milliseconds(30))
+        }
+        model.stop()
+        model.play()
+        let startDeadline = Date().addingTimeInterval(5)
+        while model.phase != .playing, Date() < startDeadline { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(model.phase, .playing)
+        XCTAssertEqual((model.player.currentItem?.asset as? AVURLAsset)?.url, file,
+                       "the next viewing session must use the completed local cache")
+    }
+
     private let master = """
     #EXTM3U
     #EXT-X-STREAM-INF:BANDWIDTH=600000,RESOLUTION=360x640

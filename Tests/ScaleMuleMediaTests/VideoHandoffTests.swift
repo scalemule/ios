@@ -27,13 +27,23 @@ final class VideoHandoffTests: XCTestCase {
         var ready = false
         view.configure(player: first.player, gravity: .resizeAspectFill) { ready = $0 }
         XCTAssertFalse(ready, "no poster handoff before the player has even loaded a frame")
+        XCTAssertEqual(view.playerLayer.opacity, 0, "an empty layer must reveal its backing poster immediately")
         first.player.isMuted = true
         first.load(clip)
         first.player.play()
         let deadline = Date().addingTimeInterval(5)
         while !ready, Date() < deadline { try await Task.sleep(nanoseconds: 30_000_000) }
         XCTAssertTrue(ready, "the real AVPlayerLayer must report a drawable frame")
+        XCTAssertEqual(view.playerLayer.opacity, 1)
+        first.stop()
+        XCTAssertEqual(view.playerLayer.opacity, 0, "stopping the same player must restore the backing poster")
+        first.load(clip)
+        first.player.play()
+        let restartDeadline = Date().addingTimeInterval(5)
+        while !ready || view.playerLayer.opacity == 0, Date() < restartDeadline { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertEqual(view.playerLayer.opacity, 1)
         view.configure(player: second.player, gravity: .resizeAspectFill) { ready = $0 }
+        XCTAssertEqual(view.playerLayer.opacity, 0, "cover the empty replacement before a later SwiftUI update")
         try await Task.sleep(nanoseconds: 150_000_000)
         XCTAssertFalse(ready, "a previous player's ready notification must not uncover an empty replacement")
         view.configure(player: nil, gravity: .resizeAspectFill, onReady: nil)

@@ -37,26 +37,61 @@ public struct PlayerLayerView: UIViewRepresentable {
         override public class var layerClass: AnyClass { AVPlayerLayer.self }
         public var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
         private var readiness: NSKeyValueObservation?
+        private var currentItemObservation: NSKeyValueObservation?
         private var onReady: ((Bool) -> Void)?
         private var generation = 0
+        private var hasDisplayedFrame = false
 
         func configure(player: AVPlayer?, gravity: AVLayerVideoGravity, onReady: ((Bool) -> Void)?) {
             self.onReady = onReady
-            playerLayer.videoGravity = gravity
+            if playerLayer.videoGravity != gravity { playerLayer.videoGravity = gravity }
             guard playerLayer.player !== player || readiness == nil else { return }
             generation += 1
             let generation = generation
             readiness = nil
+            currentItemObservation = nil
+            hasDisplayedFrame = false
+            // The poster stays behind this surface. Cover an empty replacement
+            // synchronously, without waiting for a SwiftUI state/render pass.
+            setVideoVisible(false)
             playerLayer.player = player
+            readiness = playerLayer.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak self] _, _ in
+                if Thread.isMainThread {
+                    MainActor.assumeIsolated { self?.displayReadinessChanged(generation: generation) }
+                } else {
+                    DispatchQueue.main.async { self?.displayReadinessChanged(generation: generation) }
+                }
+            }
+            currentItemObservation = player?.observe(\.currentItem, options: [.new]) { [weak self] _, change in
+                let emptied = change.newValue.flatMap { $0 } == nil
+                if Thread.isMainThread {
+                    MainActor.assumeIsolated { self?.displayReadinessChanged(generation: generation, queueEmptied: emptied) }
+                } else {
+                    DispatchQueue.main.async { self?.displayReadinessChanged(generation: generation, queueEmptied: emptied) }
+                }
+            }
+        }
+
+        private func setVideoVisible(_ visible: Bool) {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            playerLayer.opacity = visible ? 1 : 0
+            CATransaction.commit()
+        }
+
+        private func displayReadinessChanged(generation: Int, queueEmptied: Bool = false) {
+            guard self.generation == generation else { return }
+            if queueEmptied || playerLayer.player?.currentItem == nil { hasDisplayedFrame = false }
+            else if playerLayer.isReadyForDisplay { hasDisplayedFrame = true }
+            // A queued loop can briefly reset isReadyForDisplay for its next
+            // item. Keep the existing video surface and its last frame instead
+            // of flashing the first-frame poster at every loop boundary.
+            setVideoVisible(hasDisplayedFrame)
+            // The callback may change SwiftUI state; opacity belongs to the
+            // video layer's transaction, not this later notification.
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.generation == generation else { return }
-                self.onReady?(false)
-            }
-            readiness = playerLayer.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak self] _, _ in
-                DispatchQueue.main.async {
-                    guard let self, self.generation == generation else { return }
-                    self.onReady?(self.playerLayer.isReadyForDisplay)
-                }
+                self.onReady?(self.hasDisplayedFrame)
             }
         }
     }
@@ -64,10 +99,9 @@ public struct PlayerLayerView: UIViewRepresentable {
 
 /// Plays one item over and over.
 ///
-/// A streamed (HLS) video is fetched again on every loop by AVPlayerLooper:
-/// a 5 s clip looped for a minute downloads it a dozen times, keeping the
-/// radio and decoder busy and the phone hot. `replaceAtNextLoop` moves the
-/// loop to a copy on the phone at the next loop boundary.
+/// Keep the source unchanged during a viewing session. VideoPlaybackModel
+/// downloads a watched stream for the next activation, so visible loops do
+/// not reset the decoder or discard their displayed frame.
 @MainActor
 public final class LoopingPlayer {
     public let player = AVQueuePlayer()
@@ -134,6 +168,7 @@ public final class LoopingPlayer {
 
     /// Play `file` (the same video, on the phone) from the next loop on.
     /// `willReplace` runs just before the switch.
+    @available(*, deprecated, message: "Starting another source can interrupt rendering. Use the cached file on the next playback instead.")
     public func replaceAtNextLoop(with file: URL, willReplace: (() -> Void)? = nil) {
         guard source != file else { return }
         pendingFile = file
@@ -373,6 +408,7 @@ public final class VideoPlaybackModel: ObservableObject {
     public var player: AVPlayer { looping.player }
 
     private let videos: VideosService
+    private let loopCache: VideoLoopCache
     private var looping = LoopingPlayer()
     private var startTask: Task<Void, Never>?
     /// The viewing session being measured (ScaleMule Video analytics).
@@ -383,14 +419,15 @@ public final class VideoPlaybackModel: ObservableObject {
     private var captionTask: Task<Void, Never>?
     /// Set to false to skip fetching captions.
     public var loadsCaptions = true
-    /// Loop from a copy on the phone after the first full play of a stream
-    /// (no download on every loop). Off: always stream.
+    /// Cache a watched stream on this phone, then use that file on the next
+    /// activation. The current viewing session keeps its source for clean loops.
     public var loopsFromLocalCopy = true
     private var localCopyTask: Task<Void, Never>?
 
-    public init(videoId: String, videos: VideosService, poster: UIImage? = nil) {
+    public init(videoId: String, videos: VideosService, poster: UIImage? = nil, loopCache: VideoLoopCache = .shared) {
         self.videoId = videoId
         self.videos = videos
+        self.loopCache = loopCache
         self.poster = poster ?? VideoPosterStore.shared.cached(videoId)
     }
 
@@ -502,20 +539,22 @@ public final class VideoPlaybackModel: ObservableObject {
         looping.onLoop = { [weak self] in self?.loopedOnce() }
     }
 
-    /// Watched to the end of a streamed video: fetch it once and keep
-    /// looping from the phone.
+    /// Watched to the end of a streamed video: fetch it once for the next
+    /// activation, while the current stream continues looping unchanged.
     private func loopedOnce() {
         guard loopsFromLocalCopy, localCopyTask == nil, let stream = looping.source,
               stream.scheme == "https" || stream.scheme == "http" else { return }
         let videoId = videoId, target = looping
         localCopyTask = Task { [weak self] in
-            let cached = VideoLoopCache.shared.cachedFile(for: videoId) != nil
-            guard let file = await VideoLoopCache.shared.file(for: videoId, stream: stream),
+            let cached = self?.loopCache.cachedFile(for: videoId) != nil
+            guard let file = await self?.loopCache.file(for: videoId, stream: stream),
                   !Task.isCancelled, let self, self.looping === target, self.phase == .playing else { return }
             if !cached, let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize {
                 self.analytics?.downloaded(bytes: Int64(size))
             }
-            target.replaceAtNextLoop(with: file) { [weak self] in self?.analytics?.itemReplaced() }
+            // Preserve the current source and decoder for the whole viewing
+            // session. A mid-loop source swap can flash even with a warm file.
+            // start() uses this completed cache on the next activation.
         }
     }
 
@@ -552,7 +591,7 @@ public final class VideoPlaybackModel: ObservableObject {
             return
         }
         guard !Task.isCancelled else { return }
-        if let local = VideoFileCache.file(for: videoId) ?? VideoLoopCache.shared.cachedFile(for: videoId) {
+        if let local = VideoFileCache.file(for: videoId) ?? loopCache.cachedFile(for: videoId) {
             playNow(file: local)
             return
         }
