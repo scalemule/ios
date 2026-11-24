@@ -45,7 +45,7 @@ public enum CaptureError: Error, LocalizedError, Sendable {
         switch self {
         case .permissionDenied: return "Camera access is off. Turn it on in Settings."
         case .cameraUnavailable: return "This device has no camera the app can use."
-        case .cannotAddInput, .cannotAddOutput, .setupFailed: return "The camera didn't start. Close the app and open it again."
+        case .cannotAddInput, .cannotAddOutput, .setupFailed: return "The camera couldn't start. Try again."
         case .sessionNotRunning: return "The camera is still starting. Try again in a moment."
         case .alreadyCapturing: return "A photo is already being taken."
         case .captureFailed, .imageConversionFailed: return "That didn't come through. Try again."
@@ -74,6 +74,10 @@ public final class CaptureController: NSObject, ObservableObject {
     private let logger = Logger(subsystem: "com.scalemule.sdk", category: "Capture")
 
     @Published public private(set) var isSessionRunning = false
+    @Published public private(set) var interruption: CaptureInterruption?
+    /// A hint for the UI, not a capture prohibition: recording and mirroring
+    /// share this public iOS signal, and not all of them suppress camera frames.
+    @Published public internal(set) var isPreviewScreenCaptured = false
     /// The last photo taken.
     @Published public private(set) var capturedImage: UIImage?
     @Published public private(set) var isCapturing = false
@@ -116,6 +120,7 @@ public final class CaptureController: NSObject, ObservableObject {
     nonisolated(unsafe) private var inMovieMode = false
     nonisolated(unsafe) private var stopRequested = false
     nonisolated(unsafe) private var pinchStartFactor: CGFloat = 1
+    nonisolated(unsafe) private var lifecycle: CaptureSessionLifecycle
     nonisolated private let sessionQueue = DispatchQueue(label: "com.scalemule.capture.session", qos: .userInitiated)
 
     /// Rotation for the next capture, from the preview's rotation coordinator.
@@ -128,9 +133,18 @@ public final class CaptureController: NSObject, ObservableObject {
     public init(maxVideoSeconds: Double = 60, minClipSeconds: Double = 0.3) {
         self.maxVideoSeconds = maxVideoSeconds
         self.minClipSeconds = minClipSeconds
+        self.lifecycle = CaptureSessionLifecycle(isBackgrounded: UIApplication.shared.applicationState == .background)
         super.init()
         NotificationCenter.default.addObserver(self, selector: #selector(sessionRuntimeError(_:)), name: AVCaptureSession.runtimeErrorNotification, object: session)
+        NotificationCenter.default.addObserver(self, selector: #selector(sessionStateChanged(_:)), name: AVCaptureSession.didStartRunningNotification, object: session)
+        NotificationCenter.default.addObserver(self, selector: #selector(sessionStateChanged(_:)), name: AVCaptureSession.didStopRunningNotification, object: session)
+        NotificationCenter.default.addObserver(self, selector: #selector(sessionInterrupted(_:)), name: AVCaptureSession.wasInterruptedNotification, object: session)
+        NotificationCenter.default.addObserver(self, selector: #selector(sessionInterruptionEnded(_:)), name: AVCaptureSession.interruptionEndedNotification, object: session)
+        NotificationCenter.default.addObserver(self, selector: #selector(applicationBackgrounded), name: UIApplication.didEnterBackgroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(applicationForegrounded), name: UIApplication.willEnterForegroundNotification, object: nil)
     }
+
+    deinit { NotificationCenter.default.removeObserver(self) }
 
     // MARK: - Permission
 
@@ -155,30 +169,104 @@ public final class CaptureController: NSObject, ObservableObject {
     /// Sets the session up the first time, then starts it.
     public func startSession() {
         let position = currentCameraPosition
+        error = nil
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            if !self.isConfigured {
-                if let failure = self.configureSession(position: position) {
-                    Task { @MainActor in
-                        self.error = failure
-                        self.logger.error("Camera setup failed: \(failure.localizedDescription)")
-                    }
-                    return
-                }
-                self.isConfigured = true
-                self.publishDevice()
-            }
-            if !self.session.isRunning { self.session.startRunning() }
-            let running = self.session.isRunning
-            Task { @MainActor in self.isSessionRunning = running }
+            self.lifecycle.requestStart()
+            self.resumeSession(position: position)
         }
     }
 
     public func stopSession() {
         sessionQueue.async { [weak self] in
-            guard let self, self.session.isRunning else { return }
-            self.session.stopRunning()
-            Task { @MainActor in self.isSessionRunning = false }
+            guard let self else { return }
+            self.lifecycle.requestStop()
+            self.pauseSession()
+            Task { @MainActor in self.interruption = nil }
+        }
+    }
+
+    nonisolated private func resumeSession(position: AVCaptureDevice.Position = .back) {
+        guard lifecycle.shouldRun else { return }
+        guard AVCaptureDevice.authorizationStatus(for: .video) == .authorized else {
+            Task { @MainActor in self.error = .permissionDenied; self.isSessionRunning = false }
+            return
+        }
+        if !isConfigured {
+            if let failure = configureSession(position: position) {
+                logger.error("Camera setup failed: \(failure.localizedDescription)")
+                Task { @MainActor in self.error = failure; self.isSessionRunning = false }
+                return
+            }
+            isConfigured = true
+            publishDevice()
+        }
+        if !session.isRunning && !session.isInterrupted { session.startRunning() }
+        if !session.isRunning && !session.isInterrupted {
+            logger.error("Capture session did not start")
+            Task { @MainActor in
+                self.error = .setupFailed("Capture session did not start")
+                self.isSessionRunning = false
+            }
+            return
+        }
+        publishSessionState()
+    }
+
+    nonisolated private func pauseSession() {
+        // A microphone permission result may arrive after the camera was left.
+        stopRequested = true
+        if movieOutput.isRecording { movieOutput.stopRecording() }
+        if session.isRunning { session.stopRunning() }
+        publishSessionState()
+    }
+
+    nonisolated private func publishSessionState() {
+        let running = lifecycle.shouldRun && session.isRunning && !session.isInterrupted
+        Task { @MainActor in
+            self.isSessionRunning = running
+            if running { self.error = nil; self.interruption = nil }
+        }
+    }
+
+    @objc nonisolated private func sessionStateChanged(_ note: Notification) {
+        sessionQueue.async { [weak self] in self?.publishSessionState() }
+    }
+
+    @objc nonisolated private func sessionInterrupted(_ note: Notification) {
+        let reasonCode = (note.userInfo?[AVCaptureSessionInterruptionReasonKey] as? NSNumber)?.intValue ?? 0
+        logger.info("Capture session interrupted, reason: \(reasonCode)")
+        sessionQueue.async { [weak self] in
+            guard let self, self.lifecycle.isRequested else { return }
+            Task { @MainActor in
+                self.interruption = CaptureInterruption(reasonCode: reasonCode)
+                self.isSessionRunning = false
+            }
+        }
+    }
+
+    @objc nonisolated private func sessionInterruptionEnded(_ note: Notification) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in self.interruption = nil }
+            // In particular, a late notification must not restart a hidden camera.
+            self.resumeSession()
+        }
+    }
+
+    @objc nonisolated private func applicationBackgrounded() {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.lifecycle.isBackgrounded = true
+            self.pauseSession()
+        }
+    }
+
+    @objc nonisolated private func applicationForegrounded() {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.lifecycle.isBackgrounded = false
+            self.resumeSession()
         }
     }
 
@@ -196,7 +284,11 @@ public final class CaptureController: NSObject, ObservableObject {
         guard session.canAddInput(input) else { return .cannotAddInput }
         session.addInput(input)
         currentInput = input
-        guard session.canAddOutput(photoOutput) else { return .cannotAddOutput }
+        guard session.canAddOutput(photoOutput) else {
+            session.removeInput(input)
+            currentInput = nil
+            return .cannotAddOutput
+        }
         session.addOutput(photoOutput)
         // Up to 12 MP: 48 MP shots are slow to take and larger than posts need.
         let sizes = camera.activeFormat.supportedMaxPhotoDimensions.sorted { $0.width * $0.height < $1.width * $1.height }
@@ -217,11 +309,20 @@ public final class CaptureController: NSObject, ObservableObject {
     }
 
     @objc nonisolated private func sessionRuntimeError(_ note: Notification) {
-        let message = (note.userInfo?[AVCaptureSessionErrorKey] as? Error)?.localizedDescription ?? "unknown"
-        Task { @MainActor in
+        let failure = note.userInfo?[AVCaptureSessionErrorKey] as? NSError
+        let message = failure?.localizedDescription ?? "unknown"
+        let mediaServicesReset = failure?.domain == AVFoundationErrorDomain && failure?.code == AVError.mediaServicesWereReset.rawValue
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
             self.logger.error("Capture session error: \(message)")
-            self.error = .setupFailed(message)
-            self.isSessionRunning = false
+            if mediaServicesReset, self.lifecycle.recoverAfterMediaServicesReset() {
+                self.resumeSession()
+            } else {
+                Task { @MainActor in
+                    self.error = .setupFailed(message)
+                    self.isSessionRunning = false
+                }
+            }
         }
     }
 
@@ -341,7 +442,7 @@ public final class CaptureController: NSObject, ObservableObject {
 
     nonisolated private func beginClip(audio: Bool, angle: CGFloat?, mirrored: Bool, maxSeconds: Double) {
         // Released while the microphone question was up: no clip.
-        if stopRequested {
+        if stopRequested || !lifecycle.shouldRun || !session.isRunning || session.isInterrupted {
             stopRequested = false
             Task { @MainActor in
                 self.recordingTimer?.cancel()
