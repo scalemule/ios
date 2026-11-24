@@ -4,6 +4,7 @@ import UIKit
 import XCTest
 import AVFoundation
 import ScaleMuleTestHelpers
+import ScaleMuleMediaPosts
 @testable import ScaleMuleFeed
 @testable import ScaleMuleVideos
 
@@ -52,7 +53,79 @@ private struct StatefulPager: View {
     }
 }
 
+@MainActor
+private final class VideoUpdates: ObservableObject {
+    @Published var revision = 0
+}
+
+private struct VideoPager: View {
+    let ids: [String]
+    let videos: VideosService
+    @ObservedObject var updates: VideoUpdates
+    @State private var active: String?
+
+    private struct Video: Identifiable { let id: String }
+
+    var body: some View {
+        FeedPager(items: ids.map(Video.init), activeID: $active,
+                  onUpcoming: { VideoPreloader.shared.preload($0.map(\.id), videos: videos) },
+                  onActiveChanged: { VideoPreloader.shared.activate($0?.id) }) { item, isActive in
+            RemoteVideoView(videoId: item.id, size: CGSize(width: 390, height: 844),
+                            isActive: isActive, videos: videos)
+                .overlay(alignment: .top) { Text("Revision \(updates.revision)") }
+        }
+    }
+}
+
 final class FeedPagerTests: XCTestCase {
+    @MainActor
+    func testVisibleVideoKeepsItsLayerAndItemAcrossBindingEchoesAndContentUpdates() async throws {
+        PlaybackAnalytics.isEnabled = false
+        defer { PlaybackAnalytics.isEnabled = true }
+        MockURLProtocol.requestHandler = { _ in TestFixtures.mockResponse(statusCode: 404, json: "{}") }
+        let (app, _) = createTestClient()
+        let clip = try XCTUnwrap(Bundle.module.url(forResource: "portrait-1", withExtension: "mov", subdirectory: "Fixtures"))
+        let ids = (0..<6).map { _ in UUID().uuidString }
+        for id in ids { VideoFileCache.keep(clip, for: id) }
+        let updates = VideoUpdates()
+        let host = UIHostingController(rootView: VideoPager(ids: ids, videos: VideosService(app: app), updates: updates).ignoresSafeArea())
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            VideoPreloader.shared.clear()
+            ids.forEach(VideoFileCache.remove)
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        let collection = try XCTUnwrap(Self.find(UICollectionView.self, in: host.view))
+        for page in 0..<ids.count {
+            collection.setContentOffset(CGPoint(x: 0, y: CGFloat(page) * collection.bounds.height), animated: false)
+            collection.layoutIfNeeded()
+            let cell = try XCTUnwrap(collection.cellForItem(at: IndexPath(item: page, section: 0)))
+            let deadline = Date().addingTimeInterval(5)
+            while Self.find(PlayerLayerView.PlayerUIView.self, in: cell)?.playerLayer.isReadyForDisplay != true, Date() < deadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            let surface = try XCTUnwrap(Self.find(PlayerLayerView.PlayerUIView.self, in: cell))
+            let player = try XCTUnwrap(surface.playerLayer.player)
+            let item = try XCTUnwrap(player.currentItem)
+            XCTAssertTrue(surface.playerLayer.isReadyForDisplay)
+            for _ in 0..<3 {
+                updates.revision += 1 // Same path as active-ID echoes, counts and parent state changes.
+                try await Task.sleep(for: .milliseconds(80))
+                XCTAssertTrue(Self.find(PlayerLayerView.PlayerUIView.self, in: cell) === surface,
+                              "updating feed state must not remount the visible video layer")
+                XCTAssertTrue(surface.playerLayer.player === player)
+                XCTAssertTrue(player.currentItem === item,
+                              "a visible video must not be stopped and started from zero on a feed update")
+                XCTAssertTrue(surface.playerLayer.isReadyForDisplay,
+                              "the displayed frame must survive parent updates")
+            }
+        }
+    }
+
     @MainActor
     func testScrollingFarKeepsFewPostsAliveAndReportsWhatIsNext() async throws {
         Alive.count = 0
@@ -143,7 +216,10 @@ final class FeedPagerTests: XCTestCase {
         preloader.clear()
         player.player.play()
         let deadline = Date().addingTimeInterval(4)
-        while player.player.currentTime().seconds < 0.1, Date() < deadline { try await Task.sleep(nanoseconds: 50_000_000) }
+        while !player.player.currentTime().seconds.isFinite || player.player.currentTime().seconds < 0.1 {
+            guard Date() < deadline else { break }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
         XCTAssertGreaterThan(player.player.currentTime().seconds, 0.05, "canceling speculative work must not kill the transferred player")
         player.stop()
     }

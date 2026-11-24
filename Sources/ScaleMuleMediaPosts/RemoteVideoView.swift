@@ -152,28 +152,27 @@ public struct RemoteVideoView: View {
                     .opacity(0.5)
                     .clipped()
             }
+            // Keep a backing image for the entire viewing session. The native
+            // video layer reveals itself only when it has a drawable frame;
+            // SwiftUI never removes the poster between compositor transactions.
+            if let poster = model.poster {
+                Image(uiImage: poster)
+                    .resizable()
+                    .aspectRatio(contentMode: landscape ? .fit : .fill)
+                    .frame(width: size.width, height: size.height)
+                    .clipped()
+                    .accessibilityIdentifier("videoPoster")
+                    .onAppear { onReady?() }
+            } else {
+                Color(white: 0.12)
+                Image(systemName: "video.fill")
+                    .font(.system(size: 44)).foregroundStyle(.white.opacity(0.25))
+            }
             PlayerLayerView(player: model.player, gravity: landscape ? .resizeAspect : .resizeAspectFill) { ready in
                 firstFrameReady = ready
             }
                 .frame(width: size.width, height: size.height)
                 .allowsHitTesting(false)
-            // Keep the real poster ABOVE the player until its first frame is
-            // drawable. Item-ready or play() alone does not mean a visible frame.
-            if !firstFrameReady {
-                if let poster = model.poster {
-                    Image(uiImage: poster)
-                        .resizable()
-                        .aspectRatio(contentMode: landscape ? .fit : .fill)
-                        .frame(width: size.width, height: size.height)
-                        .clipped()
-                        .accessibilityIdentifier("videoPoster")
-                        .onAppear { onReady?() }
-                } else {
-                    Color(white: 0.12)
-                    Image(systemName: "video.fill")
-                        .font(.system(size: 44)).foregroundStyle(.white.opacity(0.25))
-                }
-            }
             overlay
         }
         .frame(width: size.width, height: size.height)

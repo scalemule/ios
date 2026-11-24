@@ -37,26 +37,61 @@ public struct PlayerLayerView: UIViewRepresentable {
         override public class var layerClass: AnyClass { AVPlayerLayer.self }
         public var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
         private var readiness: NSKeyValueObservation?
+        private var currentItemObservation: NSKeyValueObservation?
         private var onReady: ((Bool) -> Void)?
         private var generation = 0
+        private var hasDisplayedFrame = false
 
         func configure(player: AVPlayer?, gravity: AVLayerVideoGravity, onReady: ((Bool) -> Void)?) {
             self.onReady = onReady
-            playerLayer.videoGravity = gravity
+            if playerLayer.videoGravity != gravity { playerLayer.videoGravity = gravity }
             guard playerLayer.player !== player || readiness == nil else { return }
             generation += 1
             let generation = generation
             readiness = nil
+            currentItemObservation = nil
+            hasDisplayedFrame = false
+            // The poster stays behind this surface. Cover an empty replacement
+            // synchronously, without waiting for a SwiftUI state/render pass.
+            setVideoVisible(false)
             playerLayer.player = player
+            readiness = playerLayer.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak self] _, _ in
+                if Thread.isMainThread {
+                    MainActor.assumeIsolated { self?.displayReadinessChanged(generation: generation) }
+                } else {
+                    DispatchQueue.main.async { self?.displayReadinessChanged(generation: generation) }
+                }
+            }
+            currentItemObservation = player?.observe(\.currentItem, options: [.new]) { [weak self] _, change in
+                let emptied = change.newValue.flatMap { $0 } == nil
+                if Thread.isMainThread {
+                    MainActor.assumeIsolated { self?.displayReadinessChanged(generation: generation, queueEmptied: emptied) }
+                } else {
+                    DispatchQueue.main.async { self?.displayReadinessChanged(generation: generation, queueEmptied: emptied) }
+                }
+            }
+        }
+
+        private func setVideoVisible(_ visible: Bool) {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            playerLayer.opacity = visible ? 1 : 0
+            CATransaction.commit()
+        }
+
+        private func displayReadinessChanged(generation: Int, queueEmptied: Bool = false) {
+            guard self.generation == generation else { return }
+            if queueEmptied || playerLayer.player?.currentItem == nil { hasDisplayedFrame = false }
+            else if playerLayer.isReadyForDisplay { hasDisplayedFrame = true }
+            // A queued loop can briefly reset isReadyForDisplay for its next
+            // item. Keep the existing video surface and its last frame instead
+            // of flashing the first-frame poster at every loop boundary.
+            setVideoVisible(hasDisplayedFrame)
+            // The callback may change SwiftUI state; opacity belongs to the
+            // video layer's transaction, not this later notification.
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.generation == generation else { return }
-                self.onReady?(false)
-            }
-            readiness = playerLayer.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak self] _, _ in
-                DispatchQueue.main.async {
-                    guard let self, self.generation == generation else { return }
-                    self.onReady?(self.playerLayer.isReadyForDisplay)
-                }
+                self.onReady?(self.hasDisplayedFrame)
             }
         }
     }
@@ -75,6 +110,11 @@ public final class LoopingPlayer {
     private var loopObservation: NSKeyValueObservation?
     private var pendingFile: URL?
     private var willReplace: (() -> Void)?
+    private var replacementTask: Task<Void, Never>?
+    private var replacementObservation: NSKeyValueObservation?
+    private var retiringLooper: AVPlayerLooper?
+    private var generation = 0
+    private let logger = Logger(subsystem: "com.scalemule.sdk", category: "VideoLoop")
     /// Where the loop plays from (a stream link or a file on the phone).
     public private(set) var source: URL?
     /// Called on the main actor each time a loop ends.
@@ -112,6 +152,13 @@ public final class LoopingPlayer {
 
     /// Loop `item`, only `timeRange` of it when given (a trimmed preview).
     public func load(_ item: AVPlayerItem, timeRange: CMTimeRange? = nil) {
+        generation += 1
+        replacementTask?.cancel()
+        replacementTask = nil
+        replacementObservation = nil
+        pendingFile = nil
+        willReplace = nil
+        retiringLooper = nil
         loopObservation = nil
         looper?.disableLooping()
         player.removeAllItems()
@@ -123,21 +170,74 @@ public final class LoopingPlayer {
             looper = AVPlayerLooper(player: player, templateItem: item)
         }
         self.looper = looper
-        loopObservation = looper.observe(\.loopCount, options: [.new]) { [weak self] _, _ in
+        observeLoops(looper)
+    }
+
+    private func observeLoops(_ looper: AVPlayerLooper) {
+        loopObservation = looper.observe(\.loopCount, options: [.new]) { [weak self, weak looper] _, _ in
             // Next turn of the main queue: the player has moved on to the
             // next copy by then (analytics count the loop first).
             DispatchQueue.main.async {
-                MainActor.assumeIsolated { self?.loopEnded() }
+                MainActor.assumeIsolated {
+                    guard let self, let looper, self.looper === looper else { return }
+                    self.loopEnded()
+                }
             }
         }
     }
 
-    /// Play `file` (the same video, on the phone) from the next loop on.
-    /// `willReplace` runs just before the switch.
+    /// Queue `file` (the same video, on the phone) after the current stream
+    /// iteration. Never empty the visible queue or restart its current item.
+    /// On iOS 16, keep the running stream; the next activation uses the cache.
+    /// `willReplace` runs when the queued local copy becomes current.
     public func replaceAtNextLoop(with file: URL, willReplace: (() -> Void)? = nil) {
-        guard source != file else { return }
+        guard source != file, pendingFile == nil else { return }
         pendingFile = file
         self.willReplace = willReplace
+        guard #available(iOS 17, *) else { return }
+        let generation = generation
+        replacementTask = Task { [weak self] in
+            let asset = AVURLAsset(url: file)
+            do {
+                let duration = try await asset.load(.duration)
+                guard duration.isNumeric, duration.seconds > 0,
+                      let self, !Task.isCancelled, self.generation == generation,
+                      self.pendingFile == file, self.player.currentItem != nil else { return }
+                self.queueLocalCopy(asset, file: file, generation: generation)
+            } catch {
+                guard let self, !Task.isCancelled, self.generation == generation else { return }
+                self.logger.warning("Could not prepare a cached loop; continuing the current stream")
+                self.pendingFile = nil
+                self.willReplace = nil
+            }
+        }
+    }
+
+    @available(iOS 17, *)
+    private func queueLocalCopy(_ asset: AVURLAsset, file: URL, generation: Int) {
+        // disableLooping lets the current replica finish. Retain its looper
+        // until that happens, then let AVQueuePlayer advance to prepared local
+        // replicas. Calling load/removeAllItems here discarded the visible frame.
+        retiringLooper = looper
+        retiringLooper?.disableLooping()
+        loopObservation = nil
+        let next = AVPlayerLooper(player: player, templateItem: AVPlayerItem(asset: asset),
+                                  timeRange: .invalid, existingItemsOrdering: .loopingItemsFollowExistingItems)
+        looper = next
+        observeLoops(next)
+        replacementObservation = player.observe(\.currentItem, options: [.initial, .new]) { [weak self] _, _ in
+            DispatchQueue.main.async {
+                guard let self, self.generation == generation,
+                      (self.player.currentItem?.asset as? AVURLAsset)?.url == file else { return }
+                self.source = file
+                self.pendingFile = nil
+                self.willReplace?()
+                self.willReplace = nil
+                self.replacementObservation = nil
+                self.retiringLooper = nil
+                self.onLoop?()
+            }
+        }
     }
 
     /// A copy is waiting for the next loop (tests).
@@ -145,18 +245,14 @@ public final class LoopingPlayer {
 
     private func loopEnded() {
         guard looper != nil else { return }
-        if let file = pendingFile {
-            pendingFile = nil
-            let playing = player.rate > 0
-            willReplace?()
-            willReplace = nil
-            load(file)
-            if playing { player.play() }
-        }
         onLoop?()
     }
 
     public func stop() {
+        generation += 1
+        replacementTask?.cancel()
+        replacementTask = nil
+        replacementObservation = nil
         player.cancelPendingPrerolls()
         player.pause()
         loopObservation = nil
@@ -164,6 +260,7 @@ public final class LoopingPlayer {
         willReplace = nil
         looper?.disableLooping()
         looper = nil
+        retiringLooper = nil
         player.removeAllItems()
     }
 }
@@ -515,8 +612,24 @@ public final class VideoPlaybackModel: ObservableObject {
             if !cached, let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize {
                 self.analytics?.downloaded(bytes: Int64(size))
             }
+            // The download may be a higher-resolution HEVC rendition while
+            // the adaptive stream is AVC. Reconfiguring that decoder mid-view
+            // flashes the poster even with a nonempty queue. Keep streaming
+            // this session in that case; the next activation uses the file.
+            guard await Self.hasMatchingVideoFormat(target.player.currentItem, file: file),
+                  !Task.isCancelled, self.looping === target, self.phase == .playing else { return }
             target.replaceAtNextLoop(with: file) { [weak self] in self?.analytics?.itemReplaced() }
         }
+    }
+
+    /// Only splice cached media into a running queue if its video decoder
+    /// configuration is unchanged. Unknown formats use the next-activation path.
+    static func hasMatchingVideoFormat(_ current: AVPlayerItem?, file: URL) async -> Bool {
+        guard let track = current?.tracks.first(where: { $0.assetTrack?.mediaType == .video })?.assetTrack,
+              let activeFormats = try? await track.load(.formatDescriptions), activeFormats.count == 1,
+              let cachedTrack = try? await AVURLAsset(url: file).loadTracks(withMediaType: .video).first,
+              let cachedFormats = try? await cachedTrack.load(.formatDescriptions), cachedFormats.count == 1 else { return false }
+        return CMFormatDescriptionEqual(activeFormats[0], otherFormatDescription: cachedFormats[0])
     }
 
     private func loadCaptions() {

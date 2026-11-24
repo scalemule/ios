@@ -364,8 +364,15 @@ FeedPager(items: posts, activeID: $activeId, lookahead: 4, loadMoreDistance: 8,
   player, including when its preparation is still in flight. Backgrounding
   the feed should call `clear()`; memory warnings also release speculative work.
 - Fast swipes and slow connections can outrun preparation. `RemoteVideoView`
-  keeps the poster and loading state above the attached player until its
-  actual first frame is drawable. Preloading never guarantees immediate playback.
+  keeps a poster behind the video for the entire viewing session. The native
+  player layer reveals a drawable frame without a SwiftUI poster-removal pass
+  or opacity animation. Preloading never guarantees immediate playback.
+- Switching a streamed loop to its downloaded copy preserves the current
+  item and queues local replicas after it, rather than clearing the visible
+  queue. `VideoPlaybackModel` defers a change of video format (for example AVC
+  to HEVC) until the next activation, so the decoder isn't reconfigured during
+  the visible loop. On iOS 16 the running stream also stays in place and the
+  next activation uses the cached file.
 
 `RemotePhotoView` and `RemoteVideoView` accept `onReady` callbacks for
 content-dependent onboarding. A photo reports readiness when its decoded
