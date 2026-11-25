@@ -38,9 +38,12 @@ public struct SocialPost: Sendable, Decodable, Identifiable, Equatable {
     public let viewerFollowsAuthor: Bool?
     /// ISO 8601 timestamp.
     public let createdAt: String
+    /// The author as they are now. Social fills it on every page; nil from an
+    /// older server or when Social could not look the author up in time.
+    public let author: PostAuthor?
 
     private enum CodingKeys: String, CodingKey {
-        case id
+        case id, author
         case userId = "user_id"
         case content, title
         case mediaUrls = "media_urls"
@@ -72,6 +75,7 @@ public struct SocialPost: Sendable, Decodable, Identifiable, Equatable {
         sharesCount = try c.decodeIfPresent(Int.self, forKey: .sharesCount) ?? 0
         viewerFollowsAuthor = try? c.decodeIfPresent(Bool.self, forKey: .viewerFollowsAuthor)
         createdAt = try c.decode(String.self, forKey: .createdAt)
+        author = (try? c.decodeIfPresent(PostAuthor.self, forKey: .author)) ?? nil
     }
 
     /// `createdAt` as a date, when it parses.
@@ -93,6 +97,45 @@ public struct SocialPost: Sendable, Decodable, Identifiable, Equatable {
         case let int as Int: return Double(int)
         default: return nil
         }
+    }
+}
+
+/// Who wrote a post or comment, as they are now (Social looks it up for
+/// each page, so a renamed person's old posts show the new name).
+public struct PostAuthor: Sendable, Decodable, Equatable {
+    public let id: String
+    /// The full name as the person typed it; nil when they gave none.
+    public let name: String?
+    /// The profile photo; only an `https` link is kept.
+    public let avatarURL: URL?
+
+    public init(id: String, name: String?, avatarURL: URL?) {
+        self.id = id
+        self.name = name
+        self.avatarURL = avatarURL
+    }
+
+    /// The first word of the name ("Maya" of "Maya Okafor").
+    public var firstName: String? {
+        name?.split(whereSeparator: \.isWhitespace).first.map(String.init)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name
+        case avatarURL = "avatar_url"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        // Auth stores profile text HTML-escaped; people see the text.
+        let typed = (try c.decodeIfPresent(String.self, forKey: .name))
+            .map(SocialText.unescape)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        name = (typed?.isEmpty ?? true) ? nil : typed
+        let link = (try c.decodeIfPresent(String.self, forKey: .avatarURL))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        avatarURL = link.flatMap(URL.init(string:)).flatMap { $0.scheme?.lowercased() == "https" && $0.host != nil ? $0 : nil }
     }
 }
 
