@@ -15,3 +15,5 @@
 @_exported import ScaleMuleSafety
 @_exported import ScaleMuleProfiles
 @_exported import ScaleMuleMediaPosts
+@_exported import ScaleMuleRealtime
+@_exported import ScaleMuleChat
