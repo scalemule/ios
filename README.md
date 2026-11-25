@@ -650,6 +650,10 @@ if !received.unseen.isEmpty {
 }
 ReceivedGiftsView(model: received, person: { await publicIdentity($0) })
 
+// Brand every gift and credit screen once, on an ancestor of the views above.
+// `onAccent` is the text color on accent buttons: a light accent needs a dark one.
+.giftTheme(GiftTheme(accent: brandMint, onAccent: brandEvergreen))
+
 // Foreground recovery:
 await purchases.retryUnfinished()
 await delivery.retryPending()

@@ -131,6 +131,7 @@ public struct ReceivedGiftsView: View {
     private let person: @MainActor (String) async -> GiftRecipient?
     @State private var people: [String: GiftRecipient] = [:]
     @State private var viewed: DigitalGift?
+    @Environment(\.giftTheme) private var theme
 
     public init(model: ReceivedGiftsModel, person: @escaping @MainActor (String) async -> GiftRecipient?) {
         self.model = model
@@ -139,7 +140,7 @@ public struct ReceivedGiftsView: View {
 
     public var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 10) {
                 if !model.hasLoaded, let error = model.errorMessage {
                     Text("Your gifts couldn’t load").font(.title2.bold())
                     Text(error).foregroundStyle(.secondary).padding(.top, 4)
@@ -153,10 +154,9 @@ public struct ReceivedGiftsView: View {
                         Button { viewed = gift } label: { row(gift) }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("receivedGift")
-                        Divider()
                     }
                 }
-            }.padding(24)
+            }.padding(.horizontal, 18).padding(.vertical, 16)
         }
         .navigationTitle("Gifts you received")
         .task(id: model.gifts.map(\.id)) { await resolvePeople(model.gifts) }
@@ -170,16 +170,18 @@ public struct ReceivedGiftsView: View {
 
     private func row(_ gift: DigitalGift) -> some View {
         HStack(spacing: 14) {
-            GiftArtwork(url: gift.productSnapshot.artworkURL).frame(width: 64, height: 64)
+            GiftArtwork(url: gift.productSnapshot.artworkURL).frame(width: 56, height: 56)
             VStack(alignment: .leading, spacing: 4) {
                 Text(gift.quantity > 1 ? "\(gift.productSnapshot.displayName) × \(gift.quantity)" : gift.productSnapshot.displayName)
                     .font(.headline).foregroundStyle(.primary)
                 Text(GiftText.from(name(gift), date: gift.arrivedDate)).font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
+            Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
         }
-        .padding(.vertical, 10)
-        .contentShape(Rectangle())
+        .padding(12)
+        .background(theme.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
     private func name(_ gift: DigitalGift) -> String { people[gift.senderID]?.name ?? "Someone" }
@@ -222,7 +224,7 @@ public struct GiftArrivalView: View {
                     }
                     Text("It’s yours to keep.").foregroundStyle(.secondary)
                     if let seeAll {
-                        Button("See your gifts") { dismiss(); seeAll() }.buttonStyle(.borderedProminent)
+                        Button("See your gifts") { dismiss(); seeAll() }.buttonStyle(GiftPrimaryButtonStyle())
                             .accessibilityIdentifier("giftArrivalSeeAll")
                     }
                 }
