@@ -262,7 +262,7 @@ public struct CommerceWalletView: View {
     }
 }
 
-private struct GiftArtwork: View {
+struct GiftArtwork: View {
     let url: URL
     var body: some View {
         AsyncImage(url: url) { phase in

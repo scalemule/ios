@@ -169,4 +169,71 @@ final class CommerceTests: XCTestCase {
         while stream.hasBytesAvailable { let count = stream.read(&buffer, maxLength: buffer.count); if count <= 0 { break }; data.append(buffer, count: count) }
         return data
     }
+    private func gift(id: String, sender: String, recipient: String, status: String = "delivered") throws -> DigitalGift {
+        try JSONDecoder().decode(DigitalGift.self, from: Data("""
+        {"id":"\(id)","sender_id":"\(sender)","recipient_id":"\(recipient)","product_id":"p","environment":"Sandbox","quantity":1,"total_minor":20,"currency_code":"FHC","status":"\(status)","product_snapshot":{"display_name":"Coffee","artwork_url":"https://example.com/coffee.png","kind":"both"},"created_at":"2026-11-25T08:07:47.681Z","delivered_at":"2026-11-25T08:07:47.888123Z"}
+        """.utf8))
+    }
+    @MainActor
+    func testReceivedGiftsAreOnlyDeliveredGiftsFromOthersNewestFirst() throws {
+        let me = "019D0E79-7B2E-7EB3-99DB-153B557F16CC"
+        let all = [
+            try gift(id: "01a211bf-0000-7000-8000-000000000001", sender: "other", recipient: "019d0e79-7b2e-7eb3-99db-153b557f16cc"),
+            try gift(id: "01a211bf-0000-7000-8000-000000000003", sender: "other", recipient: "019d0e79-7b2e-7eb3-99db-153b557f16cc"),
+            try gift(id: "01a211bf-0000-7000-8000-000000000002", sender: "019d0e79-7b2e-7eb3-99db-153b557f16cc", recipient: "other"),
+            try gift(id: "01a211bf-0000-7000-8000-000000000004", sender: "other", recipient: "019d0e79-7b2e-7eb3-99db-153b557f16cc", status: "pending"),
+            try gift(id: "01a211bf-0000-7000-8000-000000000003", sender: "other", recipient: "019d0e79-7b2e-7eb3-99db-153b557f16cc"),
+        ]
+        let received = ReceivedGiftsModel.received(all, userID: me)
+        XCTAssertEqual(received.map(\.id), ["01a211bf-0000-7000-8000-000000000003", "01a211bf-0000-7000-8000-000000000001"])
+        XCTAssertEqual(ReceivedGiftsModel.unseen(received, after: nil).count, 2)
+        XCTAssertEqual(ReceivedGiftsModel.unseen(received, after: "01A211BF-0000-7000-8000-000000000001").map(\.id), ["01a211bf-0000-7000-8000-000000000003"])
+        XCTAssertTrue(ReceivedGiftsModel.unseen(received, after: "01a211bf-0000-7000-8000-000000000003").isEmpty)
+    }
+    @MainActor
+    func testNewGiftIsAnnouncedOnceAndRememberedAcrossRelaunch() async throws {
+        let commerce = try await signedIn()
+        let suite = "received-gifts-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var newest = "01a211bf-0000-7000-8000-000000000001"
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url?.path, "/v1/catalog/goods/gifts")
+            XCTAssertTrue(request.url?.query?.contains("environment=Sandbox") == true)
+            return TestFixtures.envelopedResponse(json: "[{\"id\":\"\(newest)\",\"sender_id\":\"friend\",\"recipient_id\":\"me\",\"product_id\":\"p\",\"environment\":\"Sandbox\",\"quantity\":1,\"total_minor\":20,\"currency_code\":\"FHC\",\"status\":\"delivered\",\"product_snapshot\":{\"display_name\":\"Coffee\",\"artwork_url\":\"https://example.com/coffee.png\",\"kind\":\"both\"},\"created_at\":\"2026-11-25T08:07:47.681Z\",\"delivered_at\":null}]")
+        }
+        let model = ReceivedGiftsModel(commerce: commerce, defaults: defaults)
+        await model.refresh(environment: .sandbox)
+        XCTAssertFalse(model.hasLoaded, "Nothing loads before sign-in starts the model")
+        model.start(userID: "me")
+        await model.refresh(environment: .sandbox)
+        XCTAssertEqual(model.unseen.map(\.id), [newest])
+        model.markSeen()
+        XCTAssertTrue(model.unseen.isEmpty)
+
+        let relaunched = ReceivedGiftsModel(commerce: commerce, defaults: defaults)
+        relaunched.start(userID: "me")
+        await relaunched.refresh(environment: .sandbox)
+        XCTAssertEqual(relaunched.gifts.count, 1)
+        XCTAssertTrue(relaunched.unseen.isEmpty, "A gift already shown is not announced again")
+
+        newest = "01a211bf-0000-7000-8000-000000000009"
+        await relaunched.refresh(environment: .sandbox)
+        XCTAssertEqual(relaunched.unseen.map(\.id), [newest])
+        // Another account on the same device has its own record.
+        let other = ReceivedGiftsModel(commerce: commerce, defaults: defaults)
+        other.start(userID: "someone-else")
+        await other.refresh(environment: .sandbox)
+        XCTAssertTrue(other.gifts.isEmpty)
+    }
+    func testGiftSentencesAndDates() throws {
+        XCTAssertEqual(GiftText.sent("Plamen", gift: "Coffee"), "Plamen sent you a Coffee")
+        XCTAssertEqual(GiftText.sent("Мария", gift: "Ice Cream"), "Мария sent you an Ice Cream")
+        XCTAssertEqual(GiftText.sent("太郎 🎁", gift: "The World"), "太郎 🎁 sent you The World")
+        let delivered = try XCTUnwrap(try gift(id: "g", sender: "a", recipient: "b").arrivedDate)
+        XCTAssertEqual(delivered.timeIntervalSince1970, 1795594067, accuracy: 1)
+        XCTAssertNotNil(DigitalGift.date("2026-11-25T08:07:47Z"))
+        XCTAssertEqual(GiftText.from("Plamen", date: delivered, now: delivered.addingTimeInterval(-5)), "From Plamen · just now")
+        XCTAssertEqual(GiftText.from("Plamen", date: nil), "From Plamen")
+    }
 }

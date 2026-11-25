@@ -620,6 +620,17 @@ GiftPickerView(store: purchases, delivery: delivery, loadRecipients: {
 })
 CommerceWalletView(store: purchases)
 
+// Tell the receiver. Refresh once `purchases.environment` is known and on
+// every return to the foreground; present the arrival once, then mark it seen.
+let received = ReceivedGiftsModel(commerce: commerce)
+received.start(userID: signedInUserID)
+await received.refresh(environment: environment)
+if !received.unseen.isEmpty {
+    GiftArrivalView(gifts: received.unseen, person: { await publicIdentity($0) }, seeAll: showReceivedGifts)
+    // on dismiss: received.markSeen()
+}
+ReceivedGiftsView(model: received, person: { await publicIdentity($0) })
+
 // Foreground recovery:
 await purchases.retryUnfinished()
 await delivery.retryPending()
