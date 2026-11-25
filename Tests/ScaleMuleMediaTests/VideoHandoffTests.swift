@@ -29,13 +29,30 @@ final class VideoHandoffTests: XCTestCase {
         XCTAssertFalse(ready, "no poster handoff before the player has even loaded a frame")
         XCTAssertEqual(view.playerLayer.opacity, 0, "an empty layer must reveal its backing poster immediately")
         first.player.isMuted = true
+        var loopCount = 0
+        first.onLoop = { loopCount += 1 }
         first.load(clip)
         first.player.play()
         let deadline = Date().addingTimeInterval(5)
         while !ready, Date() < deadline { try await Task.sleep(nanoseconds: 30_000_000) }
         XCTAssertTrue(ready, "the real AVPlayerLayer must report a drawable frame")
         XCTAssertEqual(view.playerLayer.opacity, 1)
+        if #available(iOS 18.0, *) {
+            let heldDeadline = Date().addingTimeInterval(5)
+            while view.retainedFrame == nil, Date() < heldDeadline { try await Task.sleep(for: .milliseconds(20)) }
+            let held = try XCTUnwrap(view.retainedFrame, "retain an actual decoded frame behind the video surface")
+            XCTAssertGreaterThan(held.size.height, held.size.width, "apply the portrait track's display transform")
+            XCTAssertLessThanOrEqual(max(held.size.width, held.size.height), 960)
+            try await Task.sleep(for: .seconds(3))
+            XCTAssertGreaterThanOrEqual(loopCount, 2, "the backing image must not freeze native playback")
+            let next = try XCTUnwrap(view.retainedFrame)
+            XCTAssertFalse(next === held, "the backing image must advance with the video")
+            XCTAssertNotNil(view.retainedFrame, "queue replicas must not clear the frame backing")
+        }
         first.stop()
+        if #available(iOS 18.0, *) {
+            XCTAssertNotNil(view.retainedFrame, "retain the image even while the video layer has no drawable item")
+        }
         XCTAssertEqual(view.playerLayer.opacity, 1, "a queue transition must not reapply the first-frame poster")
         first.load(clip)
         first.player.play()
@@ -43,6 +60,7 @@ final class VideoHandoffTests: XCTestCase {
         while !ready || view.playerLayer.opacity == 0, Date() < restartDeadline { try await Task.sleep(nanoseconds: 20_000_000) }
         XCTAssertEqual(view.playerLayer.opacity, 1)
         view.configure(player: second.player, gravity: .resizeAspectFill) { ready = $0 }
+        XCTAssertNil(view.retainedFrame, "never show a previous video's frame for another player")
         XCTAssertEqual(view.playerLayer.opacity, 0, "cover the empty replacement before a later SwiftUI update")
         try await Task.sleep(nanoseconds: 150_000_000)
         XCTAssertFalse(ready, "a previous player's ready notification must not uncover an empty replacement")

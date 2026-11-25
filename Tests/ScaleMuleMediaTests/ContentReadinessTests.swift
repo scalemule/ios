@@ -54,6 +54,7 @@ final class ContentReadinessTests: XCTestCase {
     }
 
     @MainActor private static func playerLayer(in view: UIView) -> AVPlayerLayer? {
+        if let player = view as? PlayerLayerView.PlayerUIView { return player.playerLayer }
         if let player = view.layer as? AVPlayerLayer { return player }
         for subview in view.subviews { if let player = playerLayer(in: subview) { return player } }
         return nil
