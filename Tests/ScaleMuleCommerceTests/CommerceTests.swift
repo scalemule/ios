@@ -236,4 +236,12 @@ final class CommerceTests: XCTestCase {
         XCTAssertEqual(GiftText.from("Plamen", date: delivered, now: delivered.addingTimeInterval(-5)), "From Plamen · just now")
         XCTAssertEqual(GiftText.from("Plamen", date: nil), "From Plamen")
     }
+
+    func testACreditPackNameThatOnlyRepeatsItsNumberIsLeftOut() {
+        XCTAssertFalse(CreditPackRow.nameAddsSomething("100 Firehosy Credits", credits: 100))
+        XCTAssertFalse(CreditPackRow.nameAddsSomething("1,200 Credits", credits: 1200))
+        XCTAssertFalse(CreditPackRow.nameAddsSomething("  ", credits: 100))
+        XCTAssertTrue(CreditPackRow.nameAddsSomething("Best value", credits: 500))
+        XCTAssertTrue(CreditPackRow.nameAddsSomething("Starter pack 2", credits: 100))
+    }
 }
