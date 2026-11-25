@@ -155,6 +155,10 @@ final class CommerceTests: XCTestCase {
         XCTAssertEqual(choices.map(\.id), ["friend", "other"])
         XCTAssertEqual(choices.map(\.name), ["Мая 🌸", "東京 👋"])
         XCTAssertTrue(GiftRecipient.eligible([people[0]], currentUserID: "me").isEmpty)
+        let ownID = "019b0000-1234-7000-8000-000000000001"
+        let compactID = ownID.replacingOccurrences(of: "-", with: "").uppercased()
+        XCTAssertTrue(GiftRecipient.eligible([GiftRecipient(id: compactID, name: "Me")], currentUserID: ownID).isEmpty)
+        XCTAssertTrue(GiftRecipient.eligible([GiftRecipient(id: compactID, name: "Blocked")], currentUserID: "another", blockedIDs: [ownID]).isEmpty)
     }
 
     private func body(_ request: URLRequest) throws -> Data {
