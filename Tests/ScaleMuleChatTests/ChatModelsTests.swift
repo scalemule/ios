@@ -14,6 +14,7 @@ final class ChatModelsTests: XCTestCase {
 
     private var seen: [String] = []
     private var sendAnswer: (HTTPURLResponse, Data)?
+    private var openAnswer: (HTTPURLResponse, Data)?
     /// When set, the send call waits here, so a test can look at the message while it is being sent.
     private var sendGate: DispatchSemaphore?
     private var listJSON = "[]"
@@ -27,6 +28,7 @@ final class ChatModelsTests: XCTestCase {
             self.seen.append(request.url?.query.map { "\(call)?\($0)" } ?? call)
             switch (request.httpMethod, path) {
             case ("POST", "/v1/chat/conversations"):
+                if let answer = self.openAnswer { return answer }
                 return TestFixtures.envelopedResponse(json: "{\"id\": \"\(self.c1)\", \"conversation_type\": \"direct\", \"participant_count\": 2, \"created_at\": \"2026-11-24T09:00:00Z\"}")
             case ("GET", "/v1/chat/conversations"):
                 return TestFixtures.envelopedResponse(json: self.listJSON)
@@ -328,5 +330,55 @@ final class ChatModelsTests: XCTestCase {
         await model.catchUp()
         XCTAssertTrue(seen.contains { $0.contains("after=m4") })
         XCTAssertEqual(model.messages.map(\.id), ["m1", "m4", "m6"])
+    }
+
+    func testAnAppThatNeedsAConnectionSaysSoInsteadOfAnError() async {
+        let refusal = #"{"success":false,"error":{"code":"CONNECTION_REQUIRED","message":"Connect with this person before sending a message"}}"#
+        openAnswer = TestFixtures.mockResponse(statusCode: 403, json: refusal)
+        let service = chat()
+        let model = thread(service)
+        await model.start()
+        XCTAssertTrue(model.needsConnection, "Chat refused because the two are not connected")
+        XCTAssertNil(model.errorMessage, "the screen offers Connect; it is not an error")
+        XCTAssertFalse(model.cannotMessage)
+        XCTAssertFalse(model.hasLoaded)
+
+        // They accepted: the conversation opens.
+        openAnswer = nil
+        pageJSON = "{\"messages\": []}"
+        await model.connectionChanged()
+        XCTAssertFalse(model.needsConnection)
+        XCTAssertTrue(model.hasLoaded)
+        let sent = await model.send("hello")
+        XCTAssertTrue(sent)
+
+        // The connection ended later: what was said stays, a new send is refused.
+        sendAnswer = TestFixtures.mockResponse(statusCode: 403, json: refusal)
+        let second = await model.send("still there?")
+        XCTAssertFalse(second)
+        XCTAssertTrue(model.needsConnection)
+        XCTAssertFalse(model.cannotMessage, "not connected is different from blocked")
+        XCTAssertEqual(model.messages.map(\.delivery), [.sent, .failed])
+
+        // Blocked stays what it was.
+        sendAnswer = TestFixtures.mockResponse(statusCode: 403, json: #"{"success":false,"error":{"code":"FORBIDDEN","message":"Cannot send message to this user"}}"#)
+        await model.connectionChanged()
+        let third = await model.send("hello?")
+        XCTAssertFalse(third)
+        XCTAssertTrue(model.cannotMessage)
+        XCTAssertFalse(model.needsConnection)
+    }
+
+    func testAnEarlierConversationStaysReadableWhenTheConnectionIsGone() async {
+        openAnswer = TestFixtures.mockResponse(statusCode: 403, json: #"{"success":false,"error":{"code":"CONNECTION_REQUIRED","message":"Connect with this person before sending a message"}}"#)
+        listJSON = "[\(row(c2, with: "019b0000-0000-7000-8000-0000000000cc")), \(row(c1, with: them))]"
+        pageJSON = "{\"messages\": [\(messageJSON(id: "m1", from: them, "from before"))], \"has_more\": false}"
+        let service = chat()
+        let model = thread(service)
+        await model.start()
+        XCTAssertTrue(model.needsConnection, "a new message needs a connection")
+        XCTAssertTrue(model.hasLoaded, "found among my conversations, since Chat will not open it")
+        XCTAssertEqual(model.messages.map(\.content), ["from before"])
+        XCTAssertNil(model.errorMessage)
     }
 }
