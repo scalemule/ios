@@ -1,4 +1,5 @@
 import XCTest
+import StoreKit
 @testable import ScaleMuleCore
 import ScaleMuleTestHelpers
 @testable import ScaleMuleCommerce
@@ -79,35 +80,158 @@ final class CommerceTests: XCTestCase {
         XCTAssertTrue(relaunched.pending.isEmpty)
         XCTAssertTrue(relaunched.lastDelivered?.isDelivered == true)
     }
+    private func contextJSON(_ environment: String, enabled: Bool = true,
+                             token: String = "019b0000-1234-7000-8000-000000000001", credits: Int = 100) -> String {
+        """
+        {"enabled":\(enabled),"environment":"\(environment)","currency_code":"FHC","bundle_id":"com.example.gifts","app_account_token":"\(token)","products":[{"product_id":"credits.100","display_name":"100 Credits","credits_per_unit":\(credits)}]}
+        """
+    }
+
     @MainActor
-    func testUnavailableAppTransactionOffersExplicitRecoveryWithoutGuessingEnvironment() async throws {
+    func testMissingAppReceiptStillLoadsCreditPacksWithoutChoosingWalletEnvironment() async throws {
         let commerce = try await signedIn()
         var refreshRequests: [Bool] = []
-        MockURLProtocol.requestHandler = { _ in
-            XCTFail("No server request is allowed before Apple verifies the environment")
-            throw URLError(.badServerResponse)
+        var contexts: [String] = []
+        var productRequests: [[String]] = []
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url?.path, "/v1/money/billing/app-store/context")
+            let environment = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!.first { $0.name == "environment" }!.value!
+            contexts.append(environment)
+            return TestFixtures.envelopedResponse(json: self.contextJSON(environment))
         }
-        let store = AppleGiftStore(commerce: commerce) { refresh in
+        let store = AppleGiftStore(commerce: commerce, bundleID: "com.example.gifts", loadProducts: { ids in
+            productRequests.append(ids); return []
+        }) { refresh in
             refreshRequests.append(refresh)
             throw NSError(domain: "SKInternalErrorDomain", code: 14)
         }
         await store.start()
         XCTAssertEqual(refreshRequests, [false])
+        XCTAssertEqual(contexts, ["Production", "Sandbox"])
+        XCTAssertEqual(productRequests, [["credits.100"]])
         XCTAssertTrue(store.needsAppStoreConnection)
+        XCTAssertTrue(store.enabled)
         XCTAssertFalse(store.isLoading)
+        XCTAssertNil(store.environment, "Loading products must not infer a payment or wallet environment")
+        XCTAssertTrue(store.offers.isEmpty)
+        XCTAssertFalse(store.message?.contains("SKInternalErrorDomain") == true)
+        await store.connectToAppStore()
+        XCTAssertEqual(refreshRequests, [false, true], "Only an explicit action refreshes Apple's app transaction")
+        XCTAssertNil(store.environment)
+        store.stop()
+        XCTAssertFalse(store.enabled)
+        XCTAssertFalse(store.needsAppStoreConnection)
+        XCTAssertNil(store.message)
+    }
+
+    @MainActor
+    func testCatalogCanBeBrowsedWithoutStartingAppleVerificationOrReadingBalance() async throws {
+        let commerce = try await signedIn()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url?.path, "/v1/catalog/goods/products")
+            XCTAssertTrue(request.url?.query?.contains("environment=Production") == true)
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer buyer-session")
+            return TestFixtures.envelopedResponse(json: "[" + Self.product + "]")
+        }
+        let store = AppleGiftStore(commerce: commerce) { _ in
+            XCTFail("Catalog browsing must not depend on Apple account verification")
+            throw URLError(.userAuthenticationRequired)
+        }
+        let response = await store.catalogProducts()
+        guard case .success(let gifts) = response else { return XCTFail("Catalog did not load") }
+        XCTAssertEqual(gifts.first?.displayName, "Wave")
+        XCTAssertNil(store.environment)
+        XCTAssertFalse(store.enabled)
+    }
+
+    @MainActor
+    func testUnverifiedEnvironmentNeverEnablesCheckoutInOnlyOneEnvironment() async throws {
+        let commerce = try await signedIn()
+        var requested: [String] = []
+        MockURLProtocol.requestHandler = { request in
+            let env = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!.first { $0.name == "environment" }!.value!
+            return TestFixtures.envelopedResponse(json: self.contextJSON(env, enabled: env == "Production"))
+        }
+        let store = AppleGiftStore(commerce: commerce, bundleID: "com.example.gifts", loadProducts: { ids in requested += ids; return [] }) { _ in
+            throw URLError(.userAuthenticationRequired)
+        }
+        await store.start()
+        XCTAssertFalse(store.enabled)
+        XCTAssertTrue(requested.isEmpty)
+        XCTAssertNil(store.environment)
+        store.stop()
+    }
+
+    @MainActor
+    func testCheckoutBootstrapRejectsDifferentAccountBindings() async throws {
+        let commerce = try await signedIn()
+        MockURLProtocol.requestHandler = { request in
+            let env = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!.first { $0.name == "environment" }!.value!
+            let token = env == "Production" ? "019b0000-1234-7000-8000-000000000001" : "019b0000-1234-7000-8000-000000000002"
+            return TestFixtures.envelopedResponse(json: self.contextJSON(env, token: token))
+        }
+        let store = AppleGiftStore(commerce: commerce, bundleID: "com.example.gifts", loadProducts: { _ in
+            XCTFail("Account mismatch must never reach StoreKit products"); return []
+        }) { _ in throw URLError(.userAuthenticationRequired) }
+        await store.start()
         XCTAssertFalse(store.enabled)
         XCTAssertNil(store.environment)
         XCTAssertTrue(store.offers.isEmpty)
-        XCTAssertTrue(store.message?.contains("Connect to App Store") == true)
-        XCTAssertFalse(store.message?.contains("SKInternalErrorDomain") == true)
-
-        // Only this explicit action is permitted to request Apple's sign-in sheet.
-        await store.connectToAppStore()
-        XCTAssertEqual(refreshRequests, [false, true])
-        XCTAssertTrue(store.needsAppStoreConnection)
         store.stop()
+    }
+
+    @MainActor
+    func testCheckoutPacksRequireMatchingCreditQuantitiesAndVerifiedEnvironmentMapping() throws {
+        let production = try JSONDecoder().decode(ApplePurchaseContext.self, from: Data(contextJSON("Production").utf8))
+        let sandbox = try JSONDecoder().decode(ApplePurchaseContext.self, from: Data(contextJSON("Sandbox", credits: 999).utf8))
+        XCTAssertTrue(AppleGiftStore.sharedPacks(production, sandbox).isEmpty)
+        XCTAssertFalse(AppleGiftStore.validContext(production, environment: .sandbox, bundleID: "com.example.gifts"))
+        XCTAssertFalse(AppleGiftStore.validContext(production, environment: .production, bundleID: "com.other.app"))
+        XCTAssertFalse(AppleGiftStore.validContext(production, environment: .production, bundleID: nil))
+        XCTAssertEqual(AppleGiftStore.commerceEnvironment(.production), .production)
+        XCTAssertEqual(AppleGiftStore.commerceEnvironment(.sandbox), .sandbox)
+        XCTAssertNil(AppleGiftStore.commerceEnvironment(.xcode))
+    }
+
+    @MainActor
+    func testExplicitlyUnverifiedAndLocalReceiptsCannotBootstrapCheckout() async throws {
+        let commerce = try await signedIn()
+        MockURLProtocol.requestHandler = { _ in
+            XCTFail("An invalid receipt must not bootstrap checkout")
+            throw URLError(.badServerResponse)
+        }
+        for error in [CommerceError.unverified, .localStoreUnsupported] {
+            let store = AppleGiftStore(commerce: commerce) { _ in throw error }
+            await store.start()
+            XCTAssertFalse(store.enabled)
+            XCTAssertNil(store.environment)
+            XCTAssertTrue(store.offers.isEmpty)
+            store.stop()
+        }
+    }
+
+    @MainActor
+    func testLogoutDuringCheckoutBootstrapDiscardsOldAccountContext() async throws {
+        let commerce = try await signedIn()
+        let started = expectation(description: "context started")
+        let release = DispatchSemaphore(value: 0)
+        MockURLProtocol.requestHandler = { _ in
+            started.fulfill()
+            guard release.wait(timeout: .now() + 3) == .success else { throw URLError(.timedOut) }
+            return TestFixtures.envelopedResponse(json: self.contextJSON("Production"))
+        }
+        let store = AppleGiftStore(commerce: commerce, bundleID: "com.example.gifts", loadProducts: { _ in
+            XCTFail("Old account must not load products after logout"); return []
+        }) { _ in throw URLError(.userAuthenticationRequired) }
+        let initial = Task { await store.start() }
+        await fulfillment(of: [started], timeout: 2)
+        store.stop()
+        release.signal()
+        await initial.value
+        XCTAssertNil(store.environment)
+        XCTAssertFalse(store.enabled)
         XCTAssertFalse(store.needsAppStoreConnection)
-        XCTAssertNil(store.message)
+        XCTAssertFalse(store.isLoading)
     }
 
     @MainActor
@@ -143,7 +267,7 @@ final class CommerceTests: XCTestCase {
     @MainActor
     func testStartupMessagesDistinguishConnectionFromCatalogFailure() {
         let error = NSError(domain: "SKInternalErrorDomain", code: 14)
-        XCTAssertTrue(AppleGiftStore.startupMessage(error, phase: .appVerification).contains("Connect to App Store"))
+        XCTAssertTrue(AppleGiftStore.startupMessage(error, phase: .appVerification).contains("Check your Apple account"))
         XCTAssertFalse(AppleGiftStore.startupMessage(error, phase: .products).contains("Connect to App Store"))
         XCTAssertFalse(AppleGiftStore.startupMessage(error, phase: .configuration).contains("SKInternalErrorDomain"))
     }

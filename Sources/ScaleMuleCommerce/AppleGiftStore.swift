@@ -28,22 +28,31 @@ public final class AppleGiftStore: ObservableObject {
     @Published public private(set) var needsAppStoreConnection = false
     public let commerce: CommerceService
     private var context: ApplePurchaseContext?
+    private var checkoutContexts: [CommerceEnvironment: ApplePurchaseContext] = [:]
     private var generation = UUID()
     private var listener: Task<Void, Never>?
     private var processing: Set<UInt64> = []
 
     private let appEnvironment: (Bool) async throws -> CommerceEnvironment
+    private let loadProducts: ([String]) async throws -> [StoreKit.Product]
+    private let bundleID: String?
     private let log = Logger(subsystem: "com.scalemule.sdk", category: "Commerce")
 
     public init(commerce: CommerceService) {
         self.commerce = commerce
         self.appEnvironment = Self.verifiedAppEnvironment
+        self.loadProducts = { try await StoreKit.Product.products(for: $0) }
+        self.bundleID = Bundle.main.bundleIdentifier
     }
 
     // Internal dependency injection keeps recovery tests independent of an Apple account.
-    init(commerce: CommerceService, appEnvironment: @escaping (Bool) async throws -> CommerceEnvironment) {
+    init(commerce: CommerceService, bundleID: String? = Bundle.main.bundleIdentifier,
+         loadProducts: @escaping ([String]) async throws -> [StoreKit.Product] = { try await StoreKit.Product.products(for: $0) },
+         appEnvironment: @escaping (Bool) async throws -> CommerceEnvironment) {
         self.commerce = commerce
         self.appEnvironment = appEnvironment
+        self.loadProducts = loadProducts
+        self.bundleID = bundleID
     }
     deinit { listener?.cancel() }
 
@@ -54,6 +63,14 @@ public final class AppleGiftStore: ObservableObject {
     /// Call only from a user action: Apple may present its authentication sheet.
     public func connectToAppStore() async {
         await load(refreshAppTransaction: true)
+    }
+
+    /// Public catalog browsing is independent of Apple sign-in. Production is
+    /// only the catalog being browsed, never an inferred wallet/payment environment.
+    public var catalogEnvironment: CommerceEnvironment { environment ?? .production }
+
+    public func catalogProducts(before: String? = nil) async -> ApiResponse<[GiftProduct]> {
+        await commerce.products(environment: catalogEnvironment, before: before)
     }
 
     private static func verifiedAppEnvironment(refresh: Bool) async throws -> CommerceEnvironment {
@@ -74,35 +91,65 @@ public final class AppleGiftStore: ObservableObject {
         defer { if generation == run { isLoading = false } }
         var phase = StartupPhase.appVerification
         do {
-            let environment = try await appEnvironment(refreshAppTransaction)
-            guard generation == run, !Task.isCancelled else { return }
-            phase = .configuration
-            let response = await commerce.purchaseContext(environment: environment)
-            guard generation == run, !Task.isCancelled else { return }
-            switch response {
-            case .failure(let error): throw error
-            case .success(let context):
-                guard context.appAccountToken != nil,
-                      context.bundleID == Bundle.main.bundleIdentifier,
-                      context.environment == environment else { throw CommerceError.configuration }
-                self.context = context; self.environment = environment; enabled = context.enabled
-                listener = Task { [weak self] in
-                    for await result in StoreKit.Transaction.updates {
-                        guard !Task.isCancelled, let self, self.generation == run else { return }
-                        await self.fulfill(result, generation: run)
-                    }
-                }
-                phase = .products
-                let products = try await StoreKit.Product.products(for: context.products.map(\.productID))
+            do {
+                let verified = try await appEnvironment(refreshAppTransaction)
                 guard generation == run, !Task.isCancelled else { return }
-                let mapped = Dictionary(uniqueKeysWithValues: products.filter { $0.type == .consumable }.map { ($0.id, $0) })
-                offers = context.products.compactMap { pack in mapped[pack.productID].map { StoreCreditOffer(pack: pack, product: $0) } }
-                if context.enabled && offers.isEmpty { message = "Credit packs are not available from the App Store yet." }
-                await retryUnfinished()
+                environment = verified
+            } catch {
+                guard generation == run, !Task.isCancelled else { return }
+                // A missing app-download receipt must not prevent Product.purchase
+                // from presenting Apple's own purchase/sign-in sheet. Explicitly
+                // unverified or local StoreKit receipts are still rejected.
+                if error is CommerceError { throw error }
+                needsAppStoreConnection = true
+                if refreshAppTransaction {
+                    message = "Apple couldn’t verify this installation. You can still browse gifts and choose a credit pack to continue with Apple."
+                }
+                record(error, operation: phase.rawValue)
             }
+            phase = .configuration
+            // If Apple hasn't identified the environment, checkout is available
+            // only for products enabled identically in BOTH environments. We do
+            // not choose a wallet or label a test installation as production.
+            let environments: [CommerceEnvironment] = environment.map { [$0] } ?? [.production, .sandbox]
+            for candidate in environments {
+                let response = await commerce.purchaseContext(environment: candidate)
+                guard generation == run, !Task.isCancelled else { return }
+                switch response {
+                case .failure(let error): throw error
+                case .success(let value):
+                    guard Self.validContext(value, environment: candidate, bundleID: bundleID) else { throw CommerceError.configuration }
+                    checkoutContexts[candidate] = value
+                }
+            }
+            guard let primary = checkoutContexts[environment ?? .production] else { throw CommerceError.configuration }
+            context = primary
+            let packs: [CreditPack]
+            if environment == nil {
+                guard let review = checkoutContexts[.sandbox], Self.matchingIdentity(primary, review) else { throw CommerceError.configuration }
+                enabled = primary.enabled && review.enabled
+                packs = Self.sharedPacks(primary, review)
+            } else {
+                enabled = primary.enabled
+                packs = primary.products
+            }
+            listener = Task { [weak self] in
+                for await result in StoreKit.Transaction.updates {
+                    guard !Task.isCancelled, let self, self.generation == run else { return }
+                    await self.fulfill(result, generation: run)
+                }
+            }
+            phase = .products
+            let products = try await loadProducts(enabled ? packs.map(\.productID) : [])
+            guard generation == run, !Task.isCancelled else { return }
+            let mapped = Dictionary(products.filter { $0.type == .consumable }.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            offers = packs.compactMap { pack in mapped[pack.productID].map { StoreCreditOffer(pack: pack, product: $0) } }
+            log.info("Commerce credit packs loaded count=\(self.offers.count) verifiedEnvironment=\(self.environment != nil)")
+            if enabled && offers.isEmpty { message = "Credit packs are not available from the App Store yet." }
+            await retryUnfinished()
         } catch {
             guard generation == run, !Task.isCancelled else { return }
-            needsAppStoreConnection = phase == .appVerification && (error as? CommerceError) != .localStoreUnsupported
+            if phase == .appVerification { needsAppStoreConnection = (error as? CommerceError) != .localStoreUnsupported }
             message = Self.startupMessage(error, phase: phase)
             record(error, operation: phase.rawValue)
         }
@@ -110,11 +157,26 @@ public final class AppleGiftStore: ObservableObject {
 
     enum StartupPhase: String { case appVerification, configuration, products }
 
+    static func validContext(_ context: ApplePurchaseContext, environment: CommerceEnvironment, bundleID: String?) -> Bool {
+        bundleID != nil && context.bundleID == bundleID && context.environment == environment && context.appAccountToken != nil && context.currencyCode != nil
+    }
+
+    static func matchingIdentity(_ first: ApplePurchaseContext, _ second: ApplePurchaseContext) -> Bool {
+        first.bundleID == second.bundleID && first.appAccountToken == second.appAccountToken && first.currencyCode == second.currencyCode
+    }
+
+    static func sharedPacks(_ production: ApplePurchaseContext, _ sandbox: ApplePurchaseContext) -> [CreditPack] {
+        guard production.enabled, sandbox.enabled, matchingIdentity(production, sandbox) else { return [] }
+        return production.products.filter { pack in
+            sandbox.products.contains { $0.productID == pack.productID && $0.creditsPerUnit == pack.creditsPerUnit }
+        }
+    }
+
     static func startupMessage(_ error: Error, phase: StartupPhase) -> String {
         if let error = error as? CommerceError { return error.localizedDescription }
         switch phase {
         case .appVerification:
-            return "Apple couldn’t connect this app to the App Store. Tap Connect to App Store to sign in or try again."
+            return "Apple couldn’t verify this installation. Check your Apple account and try again."
         case .configuration:
             return "We couldn’t load the purchase settings. Please try again."
         case .products:
@@ -134,13 +196,13 @@ public final class AppleGiftStore: ObservableObject {
 
     public func stop() {
         generation = UUID(); listener?.cancel(); listener = nil
-        context = nil; environment = nil; offers = []; pendingTransactions = []; processing = []
+        context = nil; checkoutContexts = [:]; environment = nil; offers = []; pendingTransactions = []; processing = []
         isLoading = false; isPurchasing = false; message = nil; enabled = false
         needsAppStoreConnection = false
     }
 
     public func purchase(_ offer: StoreCreditOffer) async {
-        guard enabled, !isPurchasing, let token = context?.appAccountToken,
+        guard enabled, !isLoading, !isPurchasing, let token = context?.appAccountToken,
               offers.contains(where: { $0.id == offer.id }) else { return }
         let run = generation
         isPurchasing = true; message = nil
@@ -176,7 +238,11 @@ public final class AppleGiftStore: ObservableObject {
             return
         }
         // Another signed-in account's purchase stays unfinished for its owner.
-        guard transaction.appAccountToken == context?.appAccountToken,
+        guard let transactionEnvironment = Self.commerceEnvironment(transaction.environment),
+              environment == nil || environment == transactionEnvironment,
+              let transactionContext = checkoutContexts[transactionEnvironment],
+              transaction.appBundleID == bundleID,
+              transaction.appAccountToken == transactionContext.appAccountToken,
               transaction.productType == .consumable, !processing.contains(transaction.id) else { return }
         processing.insert(transaction.id); pendingTransactions.insert(transaction.id)
         defer { if generation == run { processing.remove(transaction.id) } }
@@ -184,12 +250,17 @@ public final class AppleGiftStore: ObservableObject {
         guard generation == run, !Task.isCancelled else { return }
         switch response {
         case .success(let purchase):
-            guard Self.canFinish(purchase, transactionID: String(transaction.id), productID: transaction.productID, environment: environment) else {
+            guard Self.canFinish(purchase, transactionID: String(transaction.id), productID: transaction.productID, environment: transactionEnvironment),
+                  environment == nil || environment == transactionEnvironment else {
                 message = "Your purchase is saved. Credits are still being confirmed; you can retry without buying again."
                 return
             }
             await transaction.finish()
             guard generation == run else { return }
+            // Only a verified Apple purchase and matching durable server result
+            // can establish an environment when the app receipt is unavailable.
+            context = transactionContext; enabled = transactionContext.enabled
+            environment = transactionEnvironment; needsAppStoreConnection = false
             pendingTransactions.remove(transaction.id); fulfillmentRevision += 1
             message = purchase.status == "credited" ? "Credits added." : "Your App Store refund has been applied."
         case .failure(let error):
@@ -200,9 +271,15 @@ public final class AppleGiftStore: ObservableObject {
     static func canFinish(_ purchase: AppleCreditPurchase, transactionID: String, productID: String, environment: CommerceEnvironment?) -> Bool {
         purchase.isFulfilled && purchase.transactionID == transactionID && purchase.productID == productID && purchase.environment == environment
     }
+
+    static func commerceEnvironment(_ environment: StoreKit.AppStore.Environment) -> CommerceEnvironment? {
+        if environment == .production { return .production }
+        if environment == .sandbox { return .sandbox }
+        return nil
+    }
 }
 
-private enum CommerceError: LocalizedError, Equatable {
+enum CommerceError: LocalizedError, Equatable {
     case unverified, configuration, localStoreUnsupported
     var errorDescription: String? {
         switch self {
