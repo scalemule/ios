@@ -96,7 +96,7 @@ public struct GiftPickerView: View {
             if let recipient, delivery.lastDelivered?.recipientID == recipient.id { showDelivery = true }
         }
         .sheet(isPresented: $showDelivery) {
-            if let gift = delivery.lastDelivered { GiftPresentationView(gift: gift.productSnapshot, title: "Gift sent to \(recipient?.name ?? "recipient")") }
+            if let gift = delivery.lastDelivered { GiftPresentationView(gift: gift.productSnapshot, title: "Gift sent to \(recipient?.name ?? "recipient")", message: "Delivered. You spent \(gift.totalMinor) credits.") }
         }
         .sheet(isPresented: $showWallet) { NavigationStack { CommerceWalletView(store: store) } }
         .sheet(isPresented: $showRecipients) {
@@ -140,7 +140,10 @@ public struct GiftPickerView: View {
                     CreditAmount(amount: product.unitPriceMinor, font: .headline)
                 }
                 if let recipient {
-                    if missing > 0 {
+                    if balance == nil {
+                        GiftNotice(text: "Your credit balance couldn’t load. Try again before sending.", isError: true)
+                        Button("Reload balance") { Task { await refreshBalance() } }.buttonStyle(GiftPrimaryButtonStyle())
+                    } else if missing > 0 {
                         Text(missing == 1 ? "You need 1 more credit to send this." : "You need \(missing) more credits to send this.")
                             .font(.footnote).foregroundStyle(.secondary)
                         Button("Get credits") { showWallet = true }.buttonStyle(GiftPrimaryButtonStyle())
@@ -299,10 +302,11 @@ struct GiftArtwork: View {
 public struct GiftPresentationView: View {
     private let gift: GiftSnapshot
     private let title: String
+    private let message: String
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var player: AVPlayer?
-    public init(gift: GiftSnapshot, title: String = "Your gift") { self.gift = gift; self.title = title }
+    public init(gift: GiftSnapshot, title: String = "Your gift", message: String = "A little appreciation, yours to keep.") { self.gift = gift; self.title = title; self.message = message }
     public var body: some View {
         NavigationStack {
             VStack(spacing: 24) {
@@ -314,7 +318,7 @@ public struct GiftPresentationView: View {
                         let video = AVPlayer(url: animation); video.isMuted = true; player = video; video.play()
                     }.buttonStyle(GiftOutlineButtonStyle())
                 }
-                Text("A little appreciation, yours to keep.").foregroundStyle(.secondary)
+                Text(message).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
                 .navigationTitle(title)
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }

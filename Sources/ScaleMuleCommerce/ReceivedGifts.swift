@@ -22,8 +22,11 @@ public final class ReceivedGiftsModel: ObservableObject {
     private var generation = UUID()
     private var loading = false
 
-    /// A person's gift history lists sent and received gifts together, so a few
-    /// pages are read to find the received ones.
+    @Published public private(set) var isLoading = false
+    @Published public private(set) var hasMore = false
+    private var cursor: String?
+    private var seenIDs = Set<String>()
+    // Bound each request burst, but allow the collection to page without a total cap.
     static let pageLimit = 5
 
     public init(commerce: CommerceService, defaults: UserDefaults = .standard) {
@@ -37,50 +40,88 @@ public final class ReceivedGiftsModel: ObservableObject {
     }
 
     public func stop() {
-        generation = UUID(); userID = nil; environment = nil; loading = false
+        generation = UUID(); userID = nil; environment = nil; loading = false; isLoading = false
+        cursor = nil; hasMore = false; seenIDs = []
         gifts = []; unseen = []; hasLoaded = false; errorMessage = nil
     }
 
     public func refresh(environment: CommerceEnvironment) async {
-        guard let userID, !loading else { return }
+        guard let userID else { return }
+        if self.environment != environment {
+            generation = UUID(); loading = false; isLoading = false
+            gifts = []; unseen = []; cursor = nil; hasMore = false; hasLoaded = false
+            self.environment = environment
+            seenIDs = Set(defaults.stringArray(forKey: seenKey(userID: userID, environment: environment) + ".ids") ?? [])
+        }
+        await fetch(older: false)
+    }
+
+    public func refresh() async {
+        guard let environment else { return }
+        await refresh(environment: environment)
+    }
+
+    public func loadMore() async {
+        guard hasMore else { return }
+        await fetch(older: true)
+    }
+
+    private func fetch(older: Bool) async {
+        guard let userID, let environment, !loading else { return }
         let run = generation
-        loading = true
-        defer { if generation == run { loading = false } }
+        loading = true; isLoading = true; errorMessage = nil
+        defer { if generation == run { loading = false; isLoading = false } }
         var all: [DigitalGift] = []
-        var before: String?
-        var failure: String?
-        pages: for _ in 0..<Self.pageLimit {
+        var before = older ? cursor : nil
+        var more = false
+        var completedPage = false
+        for _ in 0..<Self.pageLimit {
             let response = await commerce.history(environment: environment, before: before)
             guard generation == run, !Task.isCancelled else { return }
             switch response {
             case .success(let page):
+                completedPage = true
                 all += page
-                before = page.last?.id
-                if page.count < 30 || before == nil { break pages }
+                let next = page.last?.id
+                more = page.count == 30 && next != nil && next != before
+                before = next
             case .failure(let error):
-                failure = error.message
-                break pages
+                errorMessage = error.message
+                // Keep the successful prefix and its cursor so the user can retry.
+                more = true
             }
+            if errorMessage != nil || !more || Self.received(all, userID: userID).count >= 30 { break }
         }
-        // A failed first page keeps what is already shown.
-        if all.isEmpty, let failure {
-            errorMessage = failure
-            return
+        guard completedPage else { return }
+        if older {
+            gifts = Self.received(gifts + all, userID: userID)
+            cursor = before; hasMore = more
+        } else {
+            // A refresh must not throw away older pages already browsed. Replace
+            // the refreshed range so changed/refunded gifts do not linger there.
+            let retained = more ? gifts.filter { $0.id.lowercased() < (before ?? "").lowercased() } : []
+            gifts = Self.received(all + retained, userID: userID)
+            if retained.isEmpty { cursor = before; hasMore = more }
         }
-        self.environment = environment
-        gifts = Self.received(all, userID: userID)
-        unseen = Self.unseen(gifts, after: defaults.string(forKey: seenKey(userID: userID, environment: environment)))
         hasLoaded = true
-        errorMessage = nil
+        updateUnseen()
     }
 
-    /// Call when the person has been shown the new gifts.
-    public func markSeen() {
-        defer { unseen = [] }
-        guard let userID, let environment, let newest = gifts.first else { return }
-        let key = seenKey(userID: userID, environment: environment)
-        if let stored = defaults.string(forKey: key), stored.lowercased() >= newest.id.lowercased() { return }
-        defaults.set(newest.id, forKey: key)
+    /// Acknowledge only the gifts actually presented. A later arrival stays new.
+    public func markSeen(giftIDs: [String]? = nil) {
+        guard let userID, let environment else { return }
+        seenIDs.formUnion((giftIDs ?? gifts.map(\.id)).map { $0.lowercased() })
+        // Only recent gifts are announced. Keep a bounded acknowledgement record.
+        seenIDs = Set(seenIDs.sorted(by: >).prefix(2048))
+        defaults.set(Array(seenIDs), forKey: seenKey(userID: userID, environment: environment) + ".ids")
+        updateUnseen()
+    }
+
+    private func updateUnseen() {
+        guard let userID, let environment else { return }
+        let legacyWatermark = defaults.string(forKey: seenKey(userID: userID, environment: environment))
+        unseen = Self.unseen(Array(gifts.prefix(150)), after: legacyWatermark)
+            .filter { !seenIDs.contains($0.id.lowercased()) }
     }
 
     /// Delivered gifts from someone else to this person, newest first. Gift ids
@@ -124,14 +165,13 @@ extension DigitalGift {
     }
 }
 
-/// Every gift the person has received, with who sent it. The host resolves a
-/// sender's public name and photo; an unresolved sender shows as "Someone".
+/// A permanent, paginated collection, with the sender on every gift.
 public struct ReceivedGiftsView: View {
     @ObservedObject private var model: ReceivedGiftsModel
     private let person: @MainActor (String) async -> GiftRecipient?
     @State private var people: [String: GiftRecipient] = [:]
     @State private var viewed: DigitalGift?
-    @Environment(\.giftTheme) private var theme
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     public init(model: ReceivedGiftsModel, person: @escaping @MainActor (String) async -> GiftRecipient?) {
         self.model = model
@@ -140,104 +180,173 @@ public struct ReceivedGiftsView: View {
 
     public var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                if !model.hasLoaded, let error = model.errorMessage {
-                    Text("Your gifts couldn’t load").font(.title2.bold())
-                    Text(error).foregroundStyle(.secondary).padding(.top, 4)
-                } else if !model.hasLoaded {
+            VStack(alignment: .leading, spacing: 20) {
+                if !model.hasLoaded, model.errorMessage == nil {
                     ProgressView("Loading your gifts…").frame(maxWidth: .infinity, minHeight: 160)
-                } else if model.gifts.isEmpty {
-                    Text("No gifts yet").font(.title2.bold())
-                    Text("Gifts people send you will appear here.").foregroundStyle(.secondary).padding(.top, 4)
-                } else {
-                    ForEach(model.gifts) { gift in
-                        Button { viewed = gift } label: { row(gift) }
+                } else if model.hasLoaded, model.gifts.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Image(systemName: "gift").font(.system(size: 44, weight: .light))
+                        Text(model.hasMore ? "Keep exploring your gifts" : "A little appreciation. Yours to keep.").font(.title2.weight(.bold))
+                        Text(model.hasMore ? "Your recent history contains gifts you sent. Load older gifts to find the ones you received." : "When someone sends you a gift, you’ll find it here with their name and the moment it arrived.")
+                            .foregroundStyle(.secondary)
+                    }.padding(.vertical, 32)
+                } else if !model.gifts.isEmpty {
+                    Text("From people who appreciate your moments.")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: typeSize.isAccessibilitySize ? 1 : 2), spacing: 12) {
+                        ForEach(model.gifts) { gift in
+                            Button { viewed = gift } label: {
+                                ReceivedGiftCard(gift: gift, sender: people[gift.senderID]) {
+                                    GiftArtwork(url: gift.productSnapshot.artworkURL)
+                                }
+                            }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("receivedGift")
+                            .task {
+                                if people[gift.senderID] == nil, let found = await person(gift.senderID), !Task.isCancelled {
+                                    people[gift.senderID] = found
+                                }
+                            }
+                        }
                     }
                 }
-            }.padding(.horizontal, 18).padding(.vertical, 16)
+                if let error = model.errorMessage {
+                    GiftNotice(text: error, isError: true)
+                    Button("Try again") { Task { await model.refresh() } }.buttonStyle(GiftOutlineButtonStyle())
+                }
+                if model.hasMore {
+                    Button { Task { await model.loadMore() } } label: {
+                        if model.isLoading { ProgressView() } else { Text("Load older gifts") }
+                    }.buttonStyle(GiftOutlineButtonStyle()).disabled(model.isLoading)
+                        .frame(maxWidth: .infinity).accessibilityIdentifier("receivedGiftsMore")
+                }
+            }.padding(18)
         }
-        .navigationTitle("Gifts you received")
-        .task(id: model.gifts.map(\.id)) { await resolvePeople(model.gifts) }
-        // Looking at the list is seeing the gifts, including ones that load while it is open.
+        .navigationTitle("Your gifts")
+        .refreshable { await model.refresh() }
         .onAppear { model.markSeen() }
-        .onChange(of: model.gifts.first?.id) { _ in model.markSeen() }
+        .onChange(of: model.gifts.map(\.id)) { _ in model.markSeen() }
         .sheet(item: $viewed) { gift in
-            GiftPresentationView(gift: gift.productSnapshot, title: "From \(name(gift))")
-        }
-    }
-
-    private func row(_ gift: DigitalGift) -> some View {
-        HStack(spacing: 14) {
-            GiftArtwork(url: gift.productSnapshot.artworkURL).frame(width: 56, height: 56)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(gift.quantity > 1 ? "\(gift.productSnapshot.displayName) × \(gift.quantity)" : gift.productSnapshot.displayName)
-                    .font(.headline).foregroundStyle(.primary)
-                Text(GiftText.from(name(gift), date: gift.arrivedDate)).font(.subheadline).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
-            Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-        }
-        .padding(12)
-        .background(theme.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-    }
-
-    private func name(_ gift: DigitalGift) -> String { people[gift.senderID]?.name ?? "Someone" }
-
-    private func resolvePeople(_ gifts: [DigitalGift]) async {
-        for id in Set(gifts.map(\.senderID)) where people[id] == nil {
-            if let found = await person(id) { people[id] = found }
+            GiftArrivalView(gifts: [gift], person: person, isNew: false)
         }
     }
 }
 
-/// Shown once when new gifts have arrived: the newest gift, who sent it, and a
-/// way to the full list. Call `markSeen()` on the model when it is dismissed.
+struct ReceivedGiftCard<Artwork: View>: View {
+    let gift: DigitalGift
+    let sender: GiftRecipient?
+    @ViewBuilder var artwork: Artwork
+    @Environment(\.giftTheme) private var theme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            artwork.frame(height: 126).frame(maxWidth: .infinity)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(gift.quantity > 1 ? "\(gift.productSnapshot.displayName) × \(gift.quantity)" : gift.productSnapshot.displayName)
+                    .font(.system(.headline, design: .rounded)).foregroundStyle(.primary)
+                HStack(spacing: 6) {
+                    GiftPersonAvatar(person: sender).frame(width: 24, height: 24)
+                    Text("From \(sender?.name ?? "Someone")")
+                        .font(.subheadline).foregroundStyle(.primary).lineLimit(2)
+                }
+                if let date = gift.arrivedDate {
+                    Text(date, style: .date).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.card, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .accessibilityElement(children: .combine)
+    }
+}
+
+struct GiftPersonAvatar: View {
+    let person: GiftRecipient?
+    @Environment(\.giftTheme) private var theme
+    var body: some View {
+        Group {
+            if let url = person?.avatarURL {
+                AsyncImage(url: url) { image in image.resizable().scaledToFill() } placeholder: { placeholder }
+            } else { placeholder }
+        }.clipShape(Circle()).accessibilityHidden(true)
+    }
+    private var placeholder: some View {
+        Text(person?.name.first.map { String($0).uppercased() } ?? "?")
+            .font(.system(.caption, design: .rounded).bold())
+            .foregroundStyle(theme.onAccent)
+            .frame(maxWidth: .infinity, maxHeight: .infinity).background(theme.accent)
+    }
+}
+
+/// The arrival and the permanent detail share the same gift, sender and date.
 public struct GiftArrivalView: View {
     private let gifts: [DigitalGift]
     private let person: @MainActor (String) async -> GiftRecipient?
     private let seeAll: (() -> Void)?
+    private let isNew: Bool
     @State private var sender: GiftRecipient?
     @Environment(\.dismiss) private var dismiss
 
-    /// `gifts` are the unseen gifts, newest first.
-    public init(gifts: [DigitalGift], person: @escaping @MainActor (String) async -> GiftRecipient?, seeAll: (() -> Void)? = nil) {
-        self.gifts = gifts
-        self.person = person
-        self.seeAll = seeAll
+    public init(gifts: [DigitalGift], person: @escaping @MainActor (String) async -> GiftRecipient?,
+                isNew: Bool = true, seeAll: (() -> Void)? = nil) {
+        self.gifts = gifts; self.person = person; self.isNew = isNew; self.seeAll = seeAll
     }
 
     public var body: some View {
         NavigationStack {
-            VStack(spacing: 20) {
+            ScrollView {
                 if let gift = gifts.first {
-                    Text(gifts.count > 1 ? "You received \(gifts.count) gifts" : "You received a gift").font(.largeTitle.bold())
-                        .multilineTextAlignment(.center)
-                    GiftArtwork(url: gift.productSnapshot.artworkURL).frame(maxWidth: 260, maxHeight: 260)
-                    Text(GiftText.sent(sender?.name ?? "Someone", gift: gift.productSnapshot.displayName))
-                        .font(.title3.weight(.semibold)).multilineTextAlignment(.center)
-                        .accessibilityIdentifier("giftArrivalSentence")
-                    if gifts.count > 1 {
-                        Text(gifts.count == 2 ? "and 1 more gift" : "and \(gifts.count - 1) more gifts").foregroundStyle(.secondary)
+                    GiftMomentContent(gift: gift, sender: sender, isNew: isNew, additionalCount: gifts.count - 1) {
+                        GiftArtwork(url: gift.productSnapshot.artworkURL)
                     }
-                    Text("It’s yours to keep.").foregroundStyle(.secondary)
-                    if let seeAll {
-                        Button("See your gifts") { dismiss(); seeAll() }.buttonStyle(GiftPrimaryButtonStyle())
-                            .accessibilityIdentifier("giftArrivalSeeAll")
-                    }
+                    .padding(24)
                 }
             }
-            .padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
+            .safeAreaInset(edge: .bottom) {
+                if let seeAll {
+                    Button("See your gifts") { dismiss(); seeAll() }.buttonStyle(GiftPrimaryButtonStyle())
+                        .accessibilityIdentifier("giftArrivalSeeAll").padding(20)
+                }
+            }
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
             .task { if let id = gifts.first?.senderID { sender = await person(id) } }
         }
     }
 }
 
+struct GiftMomentContent<Artwork: View>: View {
+    let gift: DigitalGift
+    let sender: GiftRecipient?
+    let isNew: Bool
+    var additionalCount = 0
+    @ViewBuilder var artwork: Artwork
+
+    var body: some View {
+        VStack(spacing: 16) {
+            GiftPersonAvatar(person: sender).frame(width: 64, height: 64)
+            Text(isNew ? "You received a gift." : "A gift from \(sender?.name ?? "Someone")")
+                .font(.system(.largeTitle, design: .rounded).weight(.bold))
+                .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+            Text(GiftText.sent(sender?.name ?? "Someone", gift: gift.productSnapshot.displayName, quantity: gift.quantity))
+                .font(.title3).multilineTextAlignment(.center)
+                .accessibilityIdentifier("giftArrivalSentence")
+            artwork.frame(height: 240).frame(maxWidth: .infinity).padding(.vertical, 8)
+            Text(gift.productSnapshot.displayName).font(.system(.title, design: .rounded).bold())
+            if let date = gift.arrivedDate {
+                Text(date.formatted(date: .abbreviated, time: .shortened))
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
+            if additionalCount > 0 {
+                Text(additionalCount == 1 ? "And 1 more gift is waiting for you." : "And \(additionalCount) more gifts are waiting for you.")
+                    .foregroundStyle(.secondary).multilineTextAlignment(.center)
+            }
+        }.frame(maxWidth: .infinity)
+    }
+}
+
 enum GiftText {
-    static func sent(_ name: String, gift: String) -> String {
+    static func sent(_ name: String, gift: String, quantity: Int = 1) -> String {
+        if quantity > 1 { return "\(name) sent you \(quantity) × \(gift)" }
         let article = gift.first.map { "aeiouAEIOU".contains($0) } == true ? "an" : "a"
         // "The World" reads better without an article.
         return gift.lowercased().hasPrefix("the ") ? "\(name) sent you \(gift)" : "\(name) sent you \(article) \(gift)"

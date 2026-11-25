@@ -645,8 +645,9 @@ let received = ReceivedGiftsModel(commerce: commerce)
 received.start(userID: signedInUserID)
 await received.refresh(environment: environment)
 if !received.unseen.isEmpty {
-    GiftArrivalView(gifts: received.unseen, person: { await publicIdentity($0) }, seeAll: showReceivedGifts)
-    // on dismiss: received.markSeen()
+    let presented = received.unseen
+    GiftArrivalView(gifts: presented, person: { await publicIdentity($0) }, seeAll: showReceivedGifts)
+    // on dismiss: received.markSeen(giftIDs: presented.map(\.id))
 }
 ReceivedGiftsView(model: received, person: { await publicIdentity($0) })
 
@@ -661,6 +662,7 @@ await delivery.retryPending()
 // Logout/account switch:
 purchases.stop()
 delivery.stop()
+received.stop()
 ```
 
 `AppleGiftStore` derives Production/Sandbox from Apple's verified app transaction,
@@ -682,6 +684,14 @@ should call `connectToAppStore()` only after an explicit tap: Apple's
 never invokes that prompt or guesses a purchase environment. Product-loading
 failures offer a separate reload action. Use TestFlight or a Sandbox Apple
 Account with a development-signed build for real server-verified purchase tests.
+
+`ReceivedGiftsView` pages through the full history and supports pull-to-refresh.
+Custom collection views can use `hasMore`, `isLoading`, `errorMessage` and
+`loadMore()`. A failed refresh preserves the last loaded collection. Acknowledge
+the IDs captured when presenting an arrival, so a later gift stays unread.
+Refresh on a matching `PushNotifications.onForegroundNotification`, on a tap,
+and on foreground resume. If notification permission is off, a bounded refresh
+while active can keep the collection current; stop it in the background.
 
 `CommerceService` is usable without the provided views. The shared views inherit
 your app tint, keep artwork visible, and offer optional muted MP4 gift animation

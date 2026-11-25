@@ -1,5 +1,5 @@
 import XCTest
-import ScaleMuleCore
+@testable import ScaleMuleCore
 import ScaleMuleTestHelpers
 @testable import ScaleMuleCommerce
 
@@ -7,9 +7,15 @@ final class CommerceTests: XCTestCase {
     static let product = #"{"id":"019b0000-0000-7000-8000-000000000001","sku":"wave","display_name":"Wave","description":"A little hello","kind":"both","artwork_url":"https://example.com/wave.png","animation_url":null,"version":1,"currency_code":"COIN","unit_price_minor":10}"#
     static let gift = #"{"id":"019b0000-0000-7000-8000-000000000002","sender_id":"sender","recipient_id":"recipient","product_id":"019b0000-0000-7000-8000-000000000001","environment":"Sandbox","quantity":1,"total_minor":10,"currency_code":"COIN","status":"delivered","product_snapshot":{"display_name":"Wave","artwork_url":"https://example.com/wave.png","animation_url":null,"kind":"both"},"created_at":"2026-11-24T10:00:00Z","delivered_at":"2026-11-24T10:00:01Z"}"#
     private func signedIn() async throws -> CommerceService {
-        let (app, _) = createTestClient()
-        try await app.sessionManager.setCredentials(CredentialSet(sessionToken: "buyer-session", sessionExpiresAt: Date().addingTimeInterval(3600)))
-        return CommerceService(app: app)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let keychain = KeychainStorage(service: "com.scalemule.commerce.tests." + UUID().uuidString)
+        let manager = SessionManager(keychain: keychain)
+        try await manager.setCredentials(CredentialSet(sessionToken: "buyer-session", sessionExpiresAt: Date().addingTimeInterval(3600)))
+        addTeardownBlock { await manager.clear() }
+        return CommerceService(client: HTTPClient(config: Configuration(apiKey: "pk_test_commerce", environment: .development, maxRetries: 0),
+            sessionManager: manager, workspaceContext: WorkspaceContext(), urlSession: session))
     }
     func testGiftUsesAuthenticatedSessionAndStableOperation() async throws {
         let commerce = try await signedIn()
@@ -244,4 +250,84 @@ final class CommerceTests: XCTestCase {
         XCTAssertTrue(CreditPackRow.nameAddsSomething("Best value", credits: 500))
         XCTAssertTrue(CreditPackRow.nameAddsSomething("Starter pack 2", credits: 100))
     }
+    @MainActor
+    func testCollectionPagesPast150SentGiftsAndRefreshKeepsOlderPages() async throws {
+        let commerce = try await signedIn()
+        let model = ReceivedGiftsModel(commerce: commerce)
+        model.start(userID: "me")
+        let pages = (0..<6).map { page in
+            (0..<30).map { offset in
+                let number = 1000 - page * 30 - offset
+                let receiver = page == 5 ? "me" : "friend"
+                let sender = page == 5 ? "friend" : "me"
+                return Self.gift.replacingOccurrences(of: "019b0000-0000-7000-8000-000000000002", with: String(format: "%04d", number))
+                    .replacingOccurrences(of: "\"sender\"", with: "\"\(sender)\"")
+                    .replacingOccurrences(of: "\"recipient\"", with: "\"\(receiver)\"")
+            }
+        }
+        MockURLProtocol.requestHandler = { request in
+            let before = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "before" }?.value
+            let page = before.flatMap(Int.init).map { (1000 - $0 + 1) / 30 } ?? 0
+            let rows = page < pages.count ? pages[page] : []
+            return TestFixtures.envelopedResponse(json: "[" + rows.joined(separator: ",") + "]")
+        }
+        await model.refresh(environment: .sandbox)
+        XCTAssertTrue(model.gifts.isEmpty)
+        XCTAssertTrue(model.hasMore, "An outgoing-heavy history must not hide older incoming gifts forever")
+        await model.loadMore()
+        XCTAssertEqual(model.gifts.count, 30)
+        await model.loadMore()
+        XCTAssertFalse(model.hasMore)
+        await model.refresh(environment: .sandbox)
+        XCTAssertEqual(model.gifts.count, 30, "Refreshing recent history preserves already loaded older pages")
+        XCTAssertFalse(model.hasMore)
+    }
+
+    @MainActor
+    func testDismissalOnlyAcknowledgesPresentedGiftsIncludingLateDelivery() async throws {
+        let commerce = try await signedIn()
+        let suite = "gift-exact-seen-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var ids = ["0002"]
+        MockURLProtocol.requestHandler = { _ in
+            let rows = ids.map { Self.gift.replacingOccurrences(of: "019b0000-0000-7000-8000-000000000002", with: $0) }
+            return TestFixtures.envelopedResponse(json: "[" + rows.joined(separator: ",") + "]")
+        }
+        let model = ReceivedGiftsModel(commerce: commerce, defaults: defaults)
+        model.start(userID: "recipient")
+        await model.refresh(environment: .sandbox)
+        let shown = model.unseen.map(\.id)
+        ids = ["0003", "0002", "0001"] // newer arrival + an older gift delivered late
+        await model.refresh(environment: .sandbox)
+        model.markSeen(giftIDs: shown)
+        XCTAssertEqual(model.unseen.map(\.id), ["0003", "0001"])
+        let relaunched = ReceivedGiftsModel(commerce: commerce, defaults: defaults)
+        relaunched.start(userID: "recipient")
+        await relaunched.refresh(environment: .sandbox)
+        XCTAssertEqual(relaunched.unseen.map(\.id), ["0003", "0001"])
+    }
+
+    @MainActor
+    func testFailedRefreshKeepsCollectionAndEnvironmentChangeClearsIt() async throws {
+        let commerce = try await signedIn()
+        let model = ReceivedGiftsModel(commerce: commerce)
+        model.start(userID: "recipient")
+        MockURLProtocol.requestHandler = { _ in TestFixtures.envelopedResponse(json: "[" + Self.gift + "]") }
+        await model.refresh(environment: .sandbox)
+        XCTAssertEqual(model.gifts.count, 1)
+        MockURLProtocol.requestHandler = { request in
+            return (HTTPURLResponse(url: request.url!, statusCode: 403, httpVersion: nil, headerFields: nil)!, Data(#"{"success":false,"error":{"code":"FORBIDDEN","message":"Unavailable"}}"#.utf8))
+        }
+        await model.refresh(environment: .sandbox)
+        XCTAssertEqual(model.gifts.count, 1)
+        XCTAssertNotNil(model.errorMessage)
+        await model.refresh(environment: .production)
+        XCTAssertTrue(model.gifts.isEmpty, "Sandbox gifts must not leak into Production")
+        XCTAssertFalse(model.hasLoaded)
+        model.start(userID: "other")
+        XCTAssertTrue(model.unseen.isEmpty)
+        XCTAssertNil(model.errorMessage)
+    }
+
 }
