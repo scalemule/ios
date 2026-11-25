@@ -40,6 +40,7 @@ Or in Xcode: File > Add Package Dependencies > enter `https://github.com/scalemu
 | `ScaleMuleMediaQueue` | Durable background posting: survives app restarts, resumable uploads, originals on Wi-Fi; your app publishes |
 | `ScaleMuleLocation` | Location for posts and "around me": permission and real fixes, venue/city/nearest-city/exact choices (Apple Maps), a Nearby feed model |
 | `ScaleMuleFeed` | Full-screen paging feed with cell reuse (`FeedPager`), reports the posts coming next for preloading |
+| `ScaleMuleCommerce` | Digital gifts, inventory, StoreKit credit packs, durable purchase/gift recovery and shared SwiftUI views |
 | `ScaleMuleSafety` | Versioned consent (Terms, Privacy, licences), reporting content, blocking people, support messages |
 | `ScaleMuleProfiles` | Add, change or remove your profile photo; other people's names and photos, cached |
 | `ScaleMuleMediaPosts` | A photo and video feed kit: `MediaPost`, `MediaPostPublisher`, `SocialFeedModel` (everyone / mine / nearby, saved first page, new-post polling, likes, hiding), `RemotePhotoView`, `RemoteVideoView`, `ProfileAvatarView` |
@@ -588,3 +589,54 @@ The SDK handles credential strategy per-endpoint automatically.
 ## License
 
 MIT
+
+## Digital gifting with StoreKit
+
+Configure Catalog, Money Pricing, restricted Money Assets wallets and the app's
+Apple products/server key first. The feature is disabled until configured.
+Use the existing authenticated `ScaleMuleApp`; never embed an Apple private key
+or an internal platform credential.
+
+```swift
+import ScaleMuleCommerce
+
+// Keep these @MainActor objects alive for the signed-in session.
+let commerce = CommerceService(app: app)
+let purchases = AppleGiftStore(commerce: commerce)
+let delivery = GiftDeliveryStore(commerce: commerce)
+
+// After authentication, without blocking the app's first content load:
+await purchases.start()
+await delivery.start(userID: signedInUserID)
+
+// Present from a deliberate user action:
+GiftPickerView(store: purchases, delivery: delivery,
+    recipientID: authorUserID, recipientName: authorDisplayName,
+    contextType: "social_post", contextID: postID)
+CommerceWalletView(store: purchases)
+
+// Foreground recovery:
+await purchases.retryUnfinished()
+await delivery.retryPending()
+
+// Logout/account switch:
+purchases.stop()
+delivery.stop()
+```
+
+`AppleGiftStore` derives Production/Sandbox from Apple's verified app transaction,
+uses the server-issued `appAccountToken`, displays StoreKit's localized price,
+and finishes a purchase only after matching durable server fulfillment. Pending
+approval and cancellation grant nothing. Local Xcode StoreKit receipts cannot
+fund server wallets; use Apple Sandbox/TestFlight for an integration test.
+
+`GiftDeliveryStore` persists each operation before sending. An uncertain response
+keeps the same operation for retry after relaunch. Do not create a new operation
+for the same intended gift. The queue is partitioned by app key and user; stop
+both stores before switching identities. App key rotation requires recovering
+any old queue before dropping the old namespace.
+
+`CommerceService` is usable without the provided views. The shared views inherit
+your app tint, keep artwork visible, and offer optional muted MP4 gift animation
+with Reduced Motion support. Owned gifts do not have monetary redemption value.
+Inventory confirms receipt; this module does not itself send gift push messages.
