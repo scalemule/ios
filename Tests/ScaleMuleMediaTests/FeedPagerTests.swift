@@ -194,6 +194,10 @@ final class FeedPagerTests: XCTestCase {
         let deadline = Date().addingTimeInterval(6)
         while preloader.bufferedIds.isEmpty, Date() < deadline { try await Task.sleep(nanoseconds: 50_000_000) }
         XCTAssertEqual(preloader.bufferedIds, ["next"], "an actual AVFoundation preroll completed")
+        if #available(iOS 18.0, *) {
+            let cover = try XCTUnwrap(VideoPosterStore.shared.cached("next"), "a warmed video must already have its decoded cover")
+            XCTAssertGreaterThan(cover.size.height, cover.size.width)
+        }
         preloader.activate("next")
         let (app, _) = createTestClient()
         preloader.preload([], videos: VideosService(app: app))

@@ -66,6 +66,7 @@ public struct RemoteVideoView: View {
     @AppStorage private var muted: Bool
     @StateObject private var model: VideoPlaybackModel
     @State private var firstFrameReady = false
+    @State private var showsBuffering = false
     @ObservedObject private var captionPreferences: CaptionPreferences
 
     /// - Parameters:
@@ -165,8 +166,6 @@ public struct RemoteVideoView: View {
                     .onAppear { onReady?() }
             } else {
                 Color(white: 0.12)
-                Image(systemName: "video.fill")
-                    .font(.system(size: 44)).foregroundStyle(.white.opacity(0.25))
             }
             PlayerLayerView(player: model.player, gravity: landscape ? .resizeAspect : .resizeAspectFill) { ready in
                 firstFrameReady = ready
@@ -219,6 +218,13 @@ public struct RemoteVideoView: View {
             }
         }
         .onChange(of: firstFrameReady) { ready in if ready { onReady?() } }
+        .task(id: waitsForFirstFrame) {
+            showsBuffering = false
+            guard waitsForFirstFrame else { return }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled, waitsForFirstFrame else { return }
+            showsBuffering = true
+        }
         .onChange(of: shownCaption) { value in captionOut?.wrappedValue = value }
         .onDisappear { captionOut?.wrappedValue = nil }
         .task {
@@ -234,7 +240,7 @@ public struct RemoteVideoView: View {
             if isActive { start() } else { model.pause() }
         }
         .onChange(of: muted) { value in model.isMuted = value }
-        .onDisappear { firstFrameReady = false; model.stop() }
+        .onDisappear { showsBuffering = false; firstFrameReady = false; model.stop() }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Video")
     }
@@ -253,15 +259,25 @@ public struct RemoteVideoView: View {
         }
     }
 
+    private var waitsForFirstFrame: Bool {
+        isActive && !firstFrameReady && [.idle, .loading, .playing].contains(model.phase)
+    }
+
+    @ViewBuilder private var bufferingIndicator: some View {
+        if showsBuffering {
+            ProgressView().tint(.white).accessibilityIdentifier("videoBuffering")
+        }
+    }
+
     @ViewBuilder
     private var overlay: some View {
         switch model.phase {
         case .loading:
-            ProgressView().tint(.white)
+            bufferingIndicator
         case .playing where !firstFrameReady:
-            ProgressView().tint(.white)
+            bufferingIndicator
         case .idle where isActive:
-            ProgressView().tint(.white)
+            bufferingIndicator
         case .processing:
             VStack(spacing: 10) {
                 ProgressView().tint(.white)

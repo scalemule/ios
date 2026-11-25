@@ -48,26 +48,33 @@ final class VideoFrameHold {
     }
 
     private func capture(_ link: CADisplayLink) {
-        guard #available(iOS 18.0, *), player?.rate != 0, rendering == nil,
-              let sample = player?.videoOutput?.taggedBuffers(forHostTime: CMTime(seconds: link.timestamp, preferredTimescale: 1_000_000_000)),
-              let tagged = sample.taggedBufferGroup.first,
-              case .pixelBuffer(let buffer) = tagged.buffer else { return }
-        let transform = sample.activeConfiguration.preferredTransform
+        guard player?.rate != 0, rendering == nil, let player else { return }
         let generation = generation
-        let context = Self.context
         rendering = Task { [weak self] in
-            let image = await Task.detached(priority: .utility) { () -> UIImage? in
-                let source = CIImage(cvPixelBuffer: buffer).transformed(by: transform)
-                let side = max(source.extent.width, source.extent.height)
-                let scale = min(1, 960 / max(side, 1))
-                let small = source.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-                guard let cg = context.createCGImage(small, from: small.extent) else { return nil }
-                return UIImage(cgImage: cg)
-            }.value
+            let image = await Self.image(from: player, hostTime: link.timestamp)
             guard let self, self.generation == generation, !Task.isCancelled else { return }
             self.rendering = nil
             if let image { self.onFrame?(image) }
         }
+    }
+
+    /// Also used after preroll while the next player is still paused. This
+    /// reuses its decoded output instead of opening another asset/decoder.
+    static func image(from player: AVPlayer, hostTime: CFTimeInterval = CACurrentMediaTime()) async -> UIImage? {
+        guard #available(iOS 18.0, *),
+              let sample = player.videoOutput?.taggedBuffers(forHostTime: CMTime(seconds: hostTime, preferredTimescale: 1_000_000_000)),
+              let tagged = sample.taggedBufferGroup.first,
+              case .pixelBuffer(let buffer) = tagged.buffer else { return nil }
+        let transform = sample.activeConfiguration.preferredTransform
+        let context = Self.context
+        return await Task.detached(priority: .utility) { () -> UIImage? in
+            let source = CIImage(cvPixelBuffer: buffer).transformed(by: transform)
+            let side = max(source.extent.width, source.extent.height)
+            let scale = min(1, 960 / max(side, 1))
+            let small = source.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            guard let cg = context.createCGImage(small, from: small.extent) else { return nil }
+            return UIImage(cgImage: cg)
+        }.value
     }
 
     deinit {

@@ -15,6 +15,21 @@ private final class RequestCounts: @unchecked Sendable {
 
 final class VideoHandoffTests: XCTestCase {
     @MainActor
+    func testPrerolledPlayerProvidesAFrameWhileStillPaused() async throws {
+        guard #available(iOS 18.0, *) else { throw XCTSkip("Player-level frame output requires iOS 18") }
+        let clip = try XCTUnwrap(Bundle.module.url(forResource: "portrait-1", withExtension: "mov", subdirectory: "Fixtures"))
+        let looping = LoopingPlayer()
+        looping.player.isMuted = true
+        looping.load(clip)
+        defer { looping.stop() }
+        let prepared = await looping.prepareStart()
+        XCTAssertTrue(prepared)
+        let sample = looping.player.videoOutput?.taggedBuffers(forHostTime: CMTime(seconds: CACurrentMediaTime(), preferredTimescale: 1_000_000_000))
+        XCTAssertNotNil(sample, "preloading must provide a decoded first frame without playing the next video")
+        XCTAssertEqual(looping.player.rate, 0)
+    }
+
+    @MainActor
     func testLayerReadinessRequiresAnActualFirstFrameAndResetsForAnotherPlayer() async throws {
         let clip = try XCTUnwrap(Bundle.module.url(forResource: "portrait-1", withExtension: "mov", subdirectory: "Fixtures"))
         let first = LoopingPlayer(), second = LoopingPlayer()

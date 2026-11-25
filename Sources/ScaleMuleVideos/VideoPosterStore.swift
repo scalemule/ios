@@ -1,5 +1,6 @@
 #if canImport(UIKit)
 import UIKit
+import Combine
 import os.log
 
 /// Decoded posters shared by speculative preparation and visible cells.
@@ -8,6 +9,7 @@ import os.log
 final class VideoPosterStore {
     static let shared = VideoPosterStore()
     private let images = NSCache<NSString, UIImage>()
+    let updates = PassthroughSubject<(id: String, image: UIImage), Never>()
     private struct Job { let token: UUID; let task: Task<UIImage?, Never> }
     private var jobs: [String: Job] = [:]
     private var order: [String] = []
@@ -24,6 +26,7 @@ final class VideoPosterStore {
     func store(_ image: UIImage, for id: String) {
         let bytes = (image.cgImage?.bytesPerRow ?? 0) * (image.cgImage?.height ?? 0)
         images.setObject(image, forKey: id as NSString, cost: bytes)
+        updates.send((id, image))
     }
     func forget(_ id: String) {
         images.removeObject(forKey: id as NSString)
