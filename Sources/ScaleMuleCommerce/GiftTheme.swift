@@ -119,10 +119,26 @@ struct CreditAmount: View {
     }
 }
 
+/// An unknown balance is distinct from both loading and a confirmed zero balance.
+enum CreditBalanceState {
+    case available(Int64)
+    case loading
+    case needsVerification
+    case unavailable
+
+    var caption: String {
+        switch self {
+        case .available: return "Use credits to send gifts."
+        case .loading: return "Fetching your credits."
+        case .needsVerification: return "Check your Apple account to load your credits."
+        case .unavailable: return "Your balance couldn’t load. Please try again."
+        }
+    }
+}
+
 /// The person's credit balance, with an optional action beside it.
 struct CreditBalanceCard<Action: View>: View {
-    let credits: Int64?
-    var caption: String?
+    let state: CreditBalanceState
     @ViewBuilder var action: Action
     @Environment(\.giftTheme) private var theme
 
@@ -130,16 +146,22 @@ struct CreditBalanceCard<Action: View>: View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Your credits").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Image(systemName: "sparkles").font(.title2.weight(.semibold)).foregroundStyle(theme.accent)
-                    // Until the balance is known, a grey block stands in for the number.
-                    Text(credits.map { $0.formatted() } ?? "00")
-                        .font(.system(size: 44, weight: .bold, design: .rounded)).monospacedDigit()
-                        .minimumScaleFactor(0.6).lineLimit(1)
-                        .redacted(reason: credits == nil ? .placeholder : [])
-                        .accessibilityLabel(credits.map { $0 == 1 ? "1 credit" : "\($0.formatted()) credits" } ?? "Loading your credits")
+                switch state {
+                case .available(let credits):
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: "sparkles").font(.title2.weight(.semibold)).foregroundStyle(theme.accent)
+                        Text(credits.formatted())
+                            .font(.system(size: 44, weight: .bold, design: .rounded)).monospacedDigit()
+                            .minimumScaleFactor(0.6).lineLimit(1)
+                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(credits == 1 ? "1 credit" : "\(credits.formatted()) credits")
+                case .loading:
+                    Text("Loading balance…").font(.headline).padding(.vertical, 6)
+                case .needsVerification, .unavailable:
+                    Text("Balance unavailable").font(.headline).padding(.vertical, 6)
                 }
-                if let caption { Text(caption).font(.footnote).foregroundStyle(.secondary) }
+                Text(state.caption).font(.footnote).foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
             action
@@ -152,8 +174,8 @@ struct CreditBalanceCard<Action: View>: View {
 }
 
 extension CreditBalanceCard where Action == EmptyView {
-    init(credits: Int64?, caption: String? = nil) {
-        self.init(credits: credits, caption: caption) { EmptyView() }
+    init(state: CreditBalanceState) {
+        self.init(state: state) { EmptyView() }
     }
 }
 

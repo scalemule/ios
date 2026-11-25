@@ -215,6 +215,11 @@ public struct CommerceWalletView: View {
     @State private var viewedGift: GiftInventoryItem?
     @State private var hasMore = false
     @State private var balance: CommerceBalance?
+    @State private var isRefreshing = false
+    @State private var refreshID = UUID()
+    @State private var hasLoadedInventory = false
+    @State private var balanceError: String?
+    @State private var inventoryError: String?
     @State private var error: String?
     @State private var buying: String?
     @Environment(\.dismiss) private var dismiss
@@ -222,7 +227,23 @@ public struct CommerceWalletView: View {
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                CreditBalanceCard(credits: balance?.availableMinor, caption: "Use credits to send gifts.")
+                CreditBalanceCard(state: balanceState)
+                if let balanceError {
+                    GiftNotice(text: balanceError, isError: true)
+                    Button("Retry balance") { Task { await refresh() } }
+                        .buttonStyle(GiftOutlineButtonStyle()).disabled(isRefreshing)
+                }
+                if store.needsAppStoreConnection {
+                    Button { Task { await store.connectToAppStore(); await refresh() } } label: {
+                        HStack(spacing: 8) {
+                            if store.isLoading { ProgressView() }
+                            Text(store.isLoading ? "Checking Apple account…" : "Check Apple account")
+                        }
+                    }
+                    .buttonStyle(GiftOutlineButtonStyle())
+                    .disabled(store.isLoading || store.isPurchasing)
+                    .accessibilityIdentifier("commerceConnectAppStore")
+                }
                 Text("Get credits").font(.title3.bold()).padding(.top, 10)
                 if store.isLoading && store.offers.isEmpty { ProgressView("Loading credit packs…").frame(maxWidth: .infinity, minHeight: 80) }
                 ForEach(store.offers) { offer in
@@ -237,17 +258,8 @@ public struct CommerceWalletView: View {
                 }
                 if let message = store.message { GiftNotice(text: message) }
                 if store.needsAppStoreConnection {
-                    Text("Choose a credit pack to continue with Apple. Already have credits? Check your Apple account to load your balance.")
+                    Text("Choose a credit pack to continue with Apple.")
                         .font(.footnote).foregroundStyle(.secondary)
-                    Button { Task { await store.connectToAppStore(); await refresh() } } label: {
-                        HStack(spacing: 8) {
-                            if store.isLoading { ProgressView() }
-                            Text(store.isLoading ? "Checking Apple account…" : "Check Apple account")
-                        }
-                    }
-                        .buttonStyle(GiftOutlineButtonStyle())
-                        .disabled(store.isLoading || store.isPurchasing)
-                        .accessibilityIdentifier("commerceConnectAppStore")
                 } else if store.offers.isEmpty && !store.isLoading {
                     Button("Reload credit packs") { Task { await store.start(); await refresh() } }
                         .buttonStyle(GiftOutlineButtonStyle())
@@ -255,7 +267,13 @@ public struct CommerceWalletView: View {
                 }
                 Text("Your gifts").font(.title3.bold()).padding(.top, 14)
                 if inventory.isEmpty {
-                    Text("Gifts people send you will appear here.").font(.subheadline).foregroundStyle(.secondary)
+                    if store.environment == nil {
+                        Text("Check your Apple account to see your received gifts.").font(.subheadline).foregroundStyle(.secondary)
+                    } else if isRefreshing {
+                        ProgressView("Loading your gifts…")
+                    } else if hasLoadedInventory && inventoryError == nil {
+                        Text("Gifts people send you will appear here.").font(.subheadline).foregroundStyle(.secondary)
+                    }
                 } else {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 12)], spacing: 12) {
                         ForEach(inventory) { item in
@@ -267,6 +285,11 @@ public struct CommerceWalletView: View {
                             .accessibilityLabel("\(item.productSnapshot.displayName), \(item.availableQuantity) owned")
                         }
                     }
+                }
+                if let inventoryError {
+                    GiftNotice(text: inventoryError, isError: true)
+                    Button("Retry gifts") { Task { await refresh() } }
+                        .buttonStyle(GiftOutlineButtonStyle()).disabled(isRefreshing)
                 }
                 if hasMore { Button("More gifts") { Task { await moreInventory() } }.buttonStyle(GiftOutlineButtonStyle()).frame(maxWidth: .infinity) }
                 if let error { GiftNotice(text: error, isError: true) }
@@ -283,27 +306,55 @@ public struct CommerceWalletView: View {
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
         .task { if store.environment == nil && !store.isLoading && !store.needsAppStoreConnection { await store.start() }; await refresh() }
         .onChange(of: store.fulfillmentRevision) { _ in Task { await refresh() } }
-        .onChange(of: store.environment) { _ in balance = nil; inventory = []; hasMore = false; Task { await refresh() } }
+        .onChange(of: store.environment) { _ in
+            refreshID = UUID(); isRefreshing = false
+            balance = nil; inventory = []; hasMore = false; hasLoadedInventory = false
+            balanceError = nil; inventoryError = nil; error = nil
+            Task { await refresh() }
+        }
         .sheet(item: $viewedGift) { item in GiftPresentationView(gift: item.productSnapshot, title: "Your gift") }
+    }
+    private var balanceState: CreditBalanceState {
+        if let balance { return .available(balance.availableMinor) }
+        if isRefreshing || (store.environment == nil && store.isLoading) { return .loading }
+        if store.environment == nil { return .needsVerification }
+        return .unavailable
     }
     private func moreInventory() async {
         guard let environment = store.environment, let last = inventory.last else { return }
+        let requestID = refreshID
         let response = await store.commerce.inventory(environment: environment, before: last.id)
-        guard store.environment == environment, !Task.isCancelled else { return }
+        guard refreshID == requestID, store.environment == environment,
+              inventory.last?.id == last.id, !Task.isCancelled else { return }
         switch response {
         case .success(let next): inventory += next; hasMore = next.count == 30
         case .failure(let failure): error = failure.message
         }
     }
     private func refresh() async {
-        guard let environment = store.environment else { balance = nil; inventory = []; return }
+        let requestID = UUID()
+        refreshID = requestID
+        guard let environment = store.environment else {
+            balance = nil; inventory = []; hasMore = false; hasLoadedInventory = false
+            balanceError = nil; inventoryError = nil; error = nil; isRefreshing = false
+            return
+        }
+        isRefreshing = true
+        defer { if refreshID == requestID { isRefreshing = false } }
         async let wallet = store.commerce.balance(environment: environment)
         async let owned = store.commerce.inventory(environment: environment)
         let (walletResult, ownedResult) = await (wallet, owned)
-        guard store.environment == environment, !Task.isCancelled else { return }
+        guard refreshID == requestID, store.environment == environment, !Task.isCancelled else { return }
         error = nil
-        switch walletResult { case .success(let value): balance=value; case .failure(let failure): balance=nil; error=failure.message }
-        switch ownedResult { case .success(let value): inventory=value; hasMore = value.count == 30; case .failure(let failure): error=failure.message }
+        switch walletResult {
+        case .success(let value): balance = value; balanceError = nil
+        case .failure(let failure): balance = nil; balanceError = failure.message
+        }
+        switch ownedResult {
+        case .success(let value):
+            inventory = value; hasMore = value.count == 30; hasLoadedInventory = true; inventoryError = nil
+        case .failure(let failure): inventoryError = failure.message
+        }
     }
 }
 

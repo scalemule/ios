@@ -283,7 +283,7 @@ enum CommerceError: LocalizedError, Equatable {
     case unverified, configuration, localStoreUnsupported
     var errorDescription: String? {
         switch self {
-        case .unverified: return "Apple could not verify this app. Tap Connect to App Store to try again."
+        case .unverified: return "Apple could not verify this app. Tap Check Apple account to try again."
         case .configuration: return "Purchases are not configured for this app yet."
         case .localStoreUnsupported: return "Use an App Store Sandbox account or TestFlight to test server-verified purchases. Local StoreKit transactions cannot buy server credits."
         }

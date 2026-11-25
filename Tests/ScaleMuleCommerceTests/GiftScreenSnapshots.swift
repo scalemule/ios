@@ -43,7 +43,7 @@ final class GiftScreenSnapshots: XCTestCase {
     func testWallet() throws {
         try write("wallet", height: 780) {
             VStack(alignment: .leading, spacing: 14) {
-                CreditBalanceCard(credits: 80, caption: "Use credits to send gifts.")
+                CreditBalanceCard(state: .available(80))
                 Text("Get credits").font(.title3.bold()).padding(.top, 10)
                 CreditPackRow(credits: 100, name: "100 Firehosy Credits", price: "$0.99") {}
                 CreditPackRow(credits: 300, name: "300 Firehosy Credits", price: "$2.99") {}
@@ -142,10 +142,21 @@ final class GiftScreenSnapshots: XCTestCase {
                 GiftRecipientRow(recipient: nil, canChange: true)
                 GiftNotice(text: "Your purchase is still being confirmed. Credits will appear shortly.")
                 GiftNotice(text: "Gifts couldn’t load. Check your connection.", isError: true)
-                Button("Connect to App Store") {}.buttonStyle(GiftPrimaryButtonStyle())
+                Button("Check Apple account") {}.buttonStyle(GiftPrimaryButtonStyle())
                 Button("Get credits") {}.buttonStyle(GiftPrimaryButtonStyle()).disabled(true)
                 HStack { Button("Try again") {}.buttonStyle(GiftOutlineButtonStyle()); Button("$4.99") {}.buttonStyle(GiftPillButtonStyle()) }
-                CreditBalanceCard(credits: nil)
+                CreditBalanceCard(state: .needsVerification)
+            }.padding(18)
+        }
+        try write("wallet-balance-states", height: 800) {
+            VStack(alignment: .leading, spacing: 18) {
+                CreditBalanceCard(state: .needsVerification)
+                Button("Check Apple account") {}.buttonStyle(GiftOutlineButtonStyle())
+                CreditBalanceCard(state: .loading)
+                CreditBalanceCard(state: .unavailable)
+                Button("Retry balance") {}.buttonStyle(GiftOutlineButtonStyle())
+                CreditBalanceCard(state: .available(0))
+                CreditBalanceCard(state: .available(12345))
             }.padding(18)
         }
     }
