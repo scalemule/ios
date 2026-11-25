@@ -1,5 +1,5 @@
 import XCTest
-import ScaleMuleCore
+@testable import ScaleMuleCore
 import ScaleMuleTestHelpers
 @testable import ScaleMuleCommerce
 
@@ -7,9 +7,15 @@ final class CommerceTests: XCTestCase {
     static let product = #"{"id":"019b0000-0000-7000-8000-000000000001","sku":"wave","display_name":"Wave","description":"A little hello","kind":"both","artwork_url":"https://example.com/wave.png","animation_url":null,"version":1,"currency_code":"COIN","unit_price_minor":10}"#
     static let gift = #"{"id":"019b0000-0000-7000-8000-000000000002","sender_id":"sender","recipient_id":"recipient","product_id":"019b0000-0000-7000-8000-000000000001","environment":"Sandbox","quantity":1,"total_minor":10,"currency_code":"COIN","status":"delivered","product_snapshot":{"display_name":"Wave","artwork_url":"https://example.com/wave.png","animation_url":null,"kind":"both"},"created_at":"2026-11-24T10:00:00Z","delivered_at":"2026-11-24T10:00:01Z"}"#
     private func signedIn() async throws -> CommerceService {
-        let (app, _) = createTestClient()
-        try await app.sessionManager.setCredentials(CredentialSet(sessionToken: "buyer-session", sessionExpiresAt: Date().addingTimeInterval(3600)))
-        return CommerceService(app: app)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let keychain = KeychainStorage(service: "com.scalemule.commerce.tests." + UUID().uuidString)
+        let manager = SessionManager(keychain: keychain)
+        try await manager.setCredentials(CredentialSet(sessionToken: "buyer-session", sessionExpiresAt: Date().addingTimeInterval(3600)))
+        addTeardownBlock { await manager.clear() }
+        return CommerceService(client: HTTPClient(config: Configuration(apiKey: "pk_test_commerce", environment: .development, maxRetries: 0),
+            sessionManager: manager, workspaceContext: WorkspaceContext(), urlSession: session))
     }
     func testGiftUsesAuthenticatedSessionAndStableOperation() async throws {
         let commerce = try await signedIn()
