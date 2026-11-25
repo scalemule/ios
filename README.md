@@ -366,7 +366,11 @@ FeedPager(items: posts, activeID: $activeId, lookahead: 4, loadMoreDistance: 8,
 - Fast swipes and slow connections can outrun preparation. `RemoteVideoView`
   keeps a poster behind the video for the entire viewing session. The native
   player layer reveals a drawable frame without a SwiftUI poster-removal pass
-  or opacity animation. Preloading never guarantees immediate playback.
+  or opacity animation. A recent decoded frame remains underneath the native
+  surface across queue transitions. This backing image is bounded to 960 pixels
+  on its longest side, sampled at most 12 times per second only while visible
+  playback advances, and cleared when another player is assigned. Preloading
+  never guarantees immediate playback.
 - After a streamed video has been watched once, `VideoPlaybackModel` caches
   a copy for the next activation. The visible session keeps the same source
   and decoder for all its loops. It never clears the queue or swaps encoding

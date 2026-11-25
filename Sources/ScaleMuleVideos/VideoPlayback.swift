@@ -36,21 +36,51 @@ public struct PlayerLayerView: UIViewRepresentable {
     }
 
     public final class PlayerUIView: UIView {
-        override public class var layerClass: AnyClass { AVPlayerLayer.self }
-        public var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+        private final class Surface: UIView {
+            override class var layerClass: AnyClass { AVPlayerLayer.self }
+        }
+        private let surface = Surface()
+        private let heldFrame = UIImageView()
+        private let frameHold = VideoFrameHold()
+        public var playerLayer: AVPlayerLayer { surface.layer as! AVPlayerLayer }
+        var retainedFrame: UIImage? { heldFrame.image }
         private var readiness: NSKeyValueObservation?
         private var onReady: ((Bool) -> Void)?
         private var generation = 0
         private var hasDisplayedFrame = false
 
+        public override init(frame: CGRect) {
+            super.init(frame: frame)
+            heldFrame.clipsToBounds = true
+            addSubview(heldFrame)
+            addSubview(surface)
+            frameHold.onFrame = { [weak self] image in self?.heldFrame.image = image }
+        }
+
+        public required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        public override func layoutSubviews() {
+            super.layoutSubviews()
+            heldFrame.frame = bounds
+            surface.frame = bounds
+        }
+
+        public override func didMoveToWindow() {
+            super.didMoveToWindow()
+            frameHold.isVisible = window != nil
+        }
+
         func configure(player: AVPlayer?, gravity: AVLayerVideoGravity, onReady: ((Bool) -> Void)?) {
             self.onReady = onReady
             if playerLayer.videoGravity != gravity { playerLayer.videoGravity = gravity }
+            heldFrame.contentMode = gravity == .resizeAspectFill ? .scaleAspectFill : gravity == .resize ? .scaleToFill : .scaleAspectFit
             guard playerLayer.player !== player || readiness == nil else { return }
             generation += 1
             let generation = generation
             readiness = nil
             hasDisplayedFrame = false
+            heldFrame.image = nil
+            frameHold.attach(player)
             // The poster stays behind this surface. Cover an empty replacement
             // synchronously, without waiting for a SwiftUI state/render pass.
             setVideoVisible(false)
