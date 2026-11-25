@@ -454,12 +454,20 @@ public final class VideoPlaybackModel: ObservableObject {
     /// activation. The current viewing session keeps its source for clean loops.
     public var loopsFromLocalCopy = true
     private var localCopyTask: Task<Void, Never>?
+    private var posterUpdates: AnyCancellable?
 
     public init(videoId: String, videos: VideosService, poster: UIImage? = nil, loopCache: VideoLoopCache = .shared) {
         self.videoId = videoId
         self.videos = videos
         self.loopCache = loopCache
         self.poster = poster ?? VideoPosterStore.shared.cached(videoId)
+        // Cells may already exist when speculative decoding finishes. Publish
+        // the prepared cover before activation, rather than waiting for play().
+        posterUpdates = VideoPosterStore.shared.updates
+            .filter { $0.id == videoId }
+            .sink { [weak self] update in
+                if self?.poster !== update.image { self?.poster = update.image }
+            }
     }
 
     /// Forget the poster kept for `videoId` (the video was deleted).
@@ -756,7 +764,8 @@ public final class VideoPreloader {
         guard let entry = entries[videoId], let player = entry.player else { return nil }
         entry.claimed = true
         entries.removeValue(forKey: videoId)
-        entry.task?.cancel()
+        // The player is claimed, so prepare() no longer owns its lifetime.
+        // Let the coalesced poster request finish for the visible cell.
         player.player.cancelPendingPrerolls()
         return player
     }
@@ -817,6 +826,13 @@ public final class VideoPreloader {
         let prepared = await looping.prepareStart()
         guard !entry.claimed else { return }
         guard !Task.isCancelled, entries[id] === entry else { looping.stop(); return }
+        // Byte buffering alone still leaves an empty surface during the next
+        // layer's first display transaction. Cache the paused decoder's frame
+        // and publish it to cells that have already been constructed.
+        if prepared, let image = await VideoFrameHold.image(from: looping.player),
+           !Task.isCancelled, !entry.claimed, entries[id] === entry {
+            VideoPosterStore.shared.store(image, for: id)
+        }
         entry.prerolled = prepared
     }
 

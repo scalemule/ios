@@ -363,6 +363,12 @@ FeedPager(items: posts, activeID: $activeId, lookahead: 4, loadMoreDistance: 8,
   prunes the old window. `VideoPlaybackModel` takes ownership of that same
   player, including when its preparation is still in flight. Backgrounding
   the feed should call `clear()`; memory warnings also release speculative work.
+- On iOS 18 and later, completed prerolls also retain the decoder's first frame
+  as the cover, without starting playback or opening a second decoder. Cells
+  already mounted off screen receive that image before activation. Taking the
+  player does not cancel an in-flight cover request. Brief first-frame waits
+  display the cover without a spinner; a loading indicator appears after 300 ms
+  if playback is still waiting. Failed and processing states remain explicit.
 - Fast swipes and slow connections can outrun preparation. `RemoteVideoView`
   keeps a poster behind the video for the entire viewing session. The native
   player layer reveals a drawable frame without a SwiftUI poster-removal pass
