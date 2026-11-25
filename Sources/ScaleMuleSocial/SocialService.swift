@@ -2,7 +2,8 @@ import Foundation
 import ScaleMuleCore
 
 /// Posts, the app feed and likes (ScaleMule Social, `/v1/social`). Following
-/// people, comments and the activity inbox are in `SocialConnections.swift`.
+/// people, comments and the activity inbox are in `SocialConnections.swift`;
+/// deleted posts and restoring them in `SocialDeletedPosts.swift`.
 ///
 /// The feed holds the signed-in person's own posts, every `public` post in the
 /// app and `followers` posts from people they follow, newest first. Posts by
@@ -77,9 +78,13 @@ public final class SocialService: ServiceModule, @unchecked Sendable {
         ))
     }
 
-    /// Delete one of your own posts.
-    public func deletePost(id: String) async -> ApiResponse<EmptyResponse> {
-        await client.requestVoid(RequestOptions(
+    /// Delete one of your own posts. Social hides it at once and keeps it,
+    /// with its comments, likes, photos and videos, until
+    /// `PostDeletion.restorableUntil` (see `restorePost`); then it removes the
+    /// post for good and has its photos and videos deleted. Do not delete the
+    /// post's media yourself. Deleting again gives the same answer.
+    public func deletePost(id: String) async -> ApiResponse<PostDeletion> {
+        await client.request(RequestOptions(
             method: .delete,
             path: "/v1/social/posts/\(Self.segment(id))",
             credential: .accessToken

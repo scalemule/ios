@@ -98,8 +98,6 @@ public final class SocialFeedModel: ObservableObject {
 
     private let logger = Logger(subsystem: "com.scalemule.ios", category: "SocialFeedModel")
     private var social: SocialService?
-    private var photos: PhotosService?
-    private var videos: VideosService?
     private var currentUserId: String?
     private var hiddenPostIds: Set<String> = []
     private var blockedAuthorIds: Set<String> = []
@@ -145,12 +143,11 @@ public final class SocialFeedModel: ObservableObject {
     #endif
 
     /// Connect to the signed-in person's services. Shows the saved first
-    /// page at once when the list is still empty. `videos` deletes the video
-    /// of a video post (default: a `VideosService` on the photos' client).
+    /// page at once when the list is still empty. `photos` and `videos` are
+    /// not used any more (the feed deleted a post's media with them before
+    /// Social did it); they stay so existing calls keep compiling.
     public func attach(social: SocialService, photos: PhotosService, videos: VideosService? = nil, currentUserId: String?) {
         self.social = social
-        self.photos = photos
-        self.videos = videos ?? VideosService(client: photos.client)
         self.currentUserId = currentUserId
         if analytics == nil { analytics = AnalyticsEvents(client: social.client) }
         #if os(iOS)
@@ -400,29 +397,64 @@ public final class SocialFeedModel: ObservableObject {
         }
     }
 
-    /// Delete one of the person's own posts with what it shows.
+    /// Delete one of the person's own posts. It leaves the feed at once.
     ///
-    /// - A video post: the video first, everywhere (ScaleMule Video removes
-    ///   every stored copy; this phone's copies go too), then the post. A
-    ///   video already gone (404) counts as deleted; any other failure keeps
-    ///   the post and sets `error`, so deleting again finishes the job.
-    /// - A photo post: the post, then its photo.
-    public func deleteOwnPost(_ post: MediaPost) async {
-        guard post.isMine, let social else { return }
-        if post.isVideo, let videos {
-            if case .failure(let apiError) = await videos.delete(id: post.mediaId), apiError.statusCode != 404 {
-                logger.error("Video delete failed: \(apiError.message, privacy: .public)")
-                error = FeedError(message: apiError.userFacingMessage)
-                return
-            }
-        }
+    /// Only the post is deleted here, never its photo or video: Social keeps
+    /// the post with its media until `PostDeletion.restorableUntil` so it can
+    /// be restored (`RecentlyDeletedModel`), then removes it for good and has
+    /// the photo and video deleted in ScaleMule Photos and Video. An app
+    /// that keeps deleted posts for 0 days gets the same from Social right
+    /// away. A video's copies on this phone (the file kept after posting, a
+    /// buffered player, the poster) are dropped now; a restored video is
+    /// streamed again.
+    ///
+    /// Returns Social's answer (say "You can restore it for
+    /// `daysToRestore()` days"), or nil when the post could not be deleted:
+    /// it stays in the feed and `error` says why.
+    @discardableResult
+    public func deleteOwnPost(_ post: MediaPost) async -> PostDeletion? {
+        guard post.isMine, let social else { return nil }
         switch await social.deletePost(id: post.id) {
-        case .success:
-            items.removeAll { $0.id == post.id }
-            newItems.removeAll { $0.id == post.id }
-            if post.isPhoto, let photos { _ = await photos.delete(id: post.mediaId) }
+        case .success(let deletion):
+            removeDeleted(postId: post.id)
+            if post.isVideo { VideosService.forgetLocalCopies(of: post.mediaId) }
+            return deletion
         case .failure(let apiError):
+            logger.error("Post delete failed: \(apiError.message, privacy: .public)")
             error = FeedError(message: apiError.userFacingMessage)
+            return nil
+        }
+    }
+
+    /// A post was deleted somewhere else in the app (another screen's model):
+    /// take it out of this feed. Unlike `hideReported`, a later
+    /// `showRestored` or a reload can show it again.
+    public func removeDeleted(postId: String) {
+        items.removeAll { $0.id == postId }
+        newItems.removeAll { $0.id == postId }
+        commentCounts[postId] = nil
+    }
+
+    /// A deleted post was restored (`RecentlyDeletedModel.onRestored`): show
+    /// it again where it belongs, newest first. Everyone's feed and "mine"
+    /// take it when it falls inside what is loaded (or everything is
+    /// loaded); an older one arrives with its page. "Following" and
+    /// "Nearby" never held it or decide by place, so they are left alone.
+    public func showRestored(_ post: MediaPost) {
+        hiddenPostIds.remove(post.id)
+        guard !isFixed, hasLoaded, post.isMine, filter == .everyone || filter == .mine,
+              !items.contains(where: { $0.id == post.id }),
+              !blockedAuthorIds.contains(post.authorId) else { return }
+        newItems.removeAll { $0.id == post.id }
+        let restored = fromServer([post])
+        guard let created = post.createdAt else {
+            items.insert(contentsOf: restored, at: 0)
+            return
+        }
+        if let index = items.firstIndex(where: { ($0.createdAt ?? .distantPast) <= created }) {
+            items.insert(contentsOf: restored, at: index)
+        } else if !hasMore {
+            items.append(contentsOf: restored)
         }
     }
 
