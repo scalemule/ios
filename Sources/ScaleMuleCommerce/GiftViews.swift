@@ -21,6 +21,7 @@ public struct GiftPickerView: View {
     @State private var hasMore = false
     @State private var showRecipients = false
     @State private var productCursor: String?
+    @State private var catalogLoad = UUID()
     @Environment(\.giftTheme) private var theme
 
     public init(store: AppleGiftStore, delivery: GiftDeliveryStore, recipientID: String, recipientName: String,
@@ -55,13 +56,7 @@ public struct GiftPickerView: View {
                     Button("Retry gift delivery") { Task { await delivery.retryPending(); await refreshBalance() } }
                         .buttonStyle(GiftOutlineButtonStyle()).disabled(delivery.isSending)
                 }
-                if store.needsAppStoreConnection {
-                    GiftNotice(text: store.message ?? "Connect to the App Store to load gifts.")
-                    Button("Connect to App Store") { Task { await store.connectToAppStore(); await load() } }
-                        .buttonStyle(GiftPrimaryButtonStyle())
-                        .disabled(store.isLoading)
-                }
-                else if loading || store.isLoading { ProgressView("Loading gifts…").frame(maxWidth: .infinity, minHeight: 200) }
+                if loading && products.isEmpty { ProgressView("Loading gifts…").frame(maxWidth: .infinity, minHeight: 200) }
                 else if let error, products.isEmpty {
                     emptyState(title: "Gifts couldn’t load", text: error, action: "Try again")
                 }
@@ -83,6 +78,10 @@ public struct GiftPickerView: View {
                 }
                 if hasMore { Button("More gifts") { Task { await moreProducts() } }.buttonStyle(GiftOutlineButtonStyle()).frame(maxWidth: .infinity) }
                 if let error, !products.isEmpty { GiftNotice(text: error, isError: true) }
+                if store.needsAppStoreConnection {
+                    Text("Browse gifts now. Apple will verify purchases when you get credits; your balance will appear once your account is verified.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
                 Text("Gifts are digital items. Credits and gifts cannot be exchanged for cash.").font(.footnote).foregroundStyle(.secondary)
                     .padding(.top, 4)
             }.padding(.horizontal, 18).padding(.vertical, 16)
@@ -91,7 +90,7 @@ public struct GiftPickerView: View {
         .safeAreaInset(edge: .bottom) { sendControls }
         .task { await load() }
         .onChange(of: store.fulfillmentRevision) { _ in Task { await refreshBalance() } }
-        .onChange(of: store.environment) { value in if value != nil { Task { await load() } } }
+        .onChange(of: store.environment) { _ in balance = nil; selected = nil; Task { await load() } }
         .onChange(of: delivery.lastDelivered?.id) { _ in
             if let recipient, delivery.lastDelivered?.recipientID == recipient.id { showDelivery = true }
         }
@@ -140,7 +139,11 @@ public struct GiftPickerView: View {
                     CreditAmount(amount: product.unitPriceMinor, font: .headline)
                 }
                 if let recipient {
-                    if balance == nil {
+                    if store.environment == nil {
+                        Text("Continue with Apple to get credits or verify your existing balance.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        Button("Continue with Apple") { showWallet = true }.buttonStyle(GiftPrimaryButtonStyle())
+                    } else if balance == nil {
                         GiftNotice(text: "Your credit balance couldn’t load. Try again before sending.", isError: true)
                         Button("Reload balance") { Task { await refreshBalance() } }.buttonStyle(GiftPrimaryButtonStyle())
                     } else if missing > 0 {
@@ -173,19 +176,25 @@ public struct GiftPickerView: View {
         }
     }
     private func load() async {
+        let run = UUID(); catalogLoad = run
         loading = true; error = nil
-        defer { loading = false }
-        if store.environment == nil && !store.isLoading && !store.needsAppStoreConnection { await store.start() }
-        guard let environment = store.environment else { error = store.message; return }
-        async let items = store.commerce.products(environment: environment)
-        async let wallet = store.commerce.balance(environment: environment)
-        switch await items { case .success(let value): productCursor = value.last?.id; products = ordered(value); hasMore = value.count == 30; case .failure(let failure): error = failure.message }
-        if case .success(let value) = await wallet { balance = value }
+        defer { if catalogLoad == run { loading = false } }
+        let browsing = store.catalogEnvironment
+        let items = await store.catalogProducts()
+        guard catalogLoad == run, store.catalogEnvironment == browsing, !Task.isCancelled else { return }
+        switch items { case .success(let value): productCursor = value.last?.id; products = ordered(value); hasMore = value.count == 30; case .failure(let failure): error = failure.message }
+        await refreshBalance()
     }
     private func moreProducts() async {
-        guard let environment = store.environment, let cursor = productCursor else { return }
-        switch await store.commerce.products(environment: environment, before: cursor) {
-        case .success(let next): productCursor = next.last?.id; products = ordered(products + next); hasMore = next.count == 30
+        guard let cursor = productCursor else { return }
+        let run = catalogLoad; let browsing = store.catalogEnvironment
+        let response = await store.catalogProducts(before: cursor)
+        guard run == catalogLoad, store.catalogEnvironment == browsing, !Task.isCancelled else { return }
+        switch response {
+        case .success(let next):
+            productCursor = next.last?.id
+            let existing = Set(products.map(\.id))
+            products = ordered(products + next.filter { !existing.contains($0.id) }); hasMore = next.count == 30
         case .failure(let failure): error = failure.message
         }
     }
@@ -193,8 +202,10 @@ public struct GiftPickerView: View {
         items.sorted { $0.unitPriceMinor == $1.unitPriceMinor ? $0.id < $1.id : $0.unitPriceMinor < $1.unitPriceMinor }
     }
     private func refreshBalance() async {
-        guard let environment = store.environment else { return }
-        if case .success(let value) = await store.commerce.balance(environment: environment) { balance = value }
+        guard let environment = store.environment else { balance = nil; return }
+        let response = await store.commerce.balance(environment: environment)
+        guard store.environment == environment, !Task.isCancelled else { return }
+        switch response { case .success(let value): balance = value; case .failure: balance = nil }
     }
 }
 
@@ -219,15 +230,22 @@ public struct CommerceWalletView: View {
                                   isBuying: buying == offer.id) {
                         Task { buying = offer.id; await store.purchase(offer); buying = nil }
                     }
-                    .disabled(store.isPurchasing || !store.enabled)
+                    .disabled(store.isLoading || store.isPurchasing || !store.enabled)
                 }
                 if store.offers.isEmpty && !store.isLoading && store.message == nil {
                     Text("Credit packs are not available yet.").font(.subheadline).foregroundStyle(.secondary)
                 }
                 if let message = store.message { GiftNotice(text: message) }
                 if store.needsAppStoreConnection {
-                    Button("Connect to App Store") { Task { await store.connectToAppStore(); await refresh() } }
-                        .buttonStyle(GiftPrimaryButtonStyle())
+                    Text("Choose a credit pack to continue with Apple. Already have credits? Check your Apple account to load your balance.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Button { Task { await store.connectToAppStore(); await refresh() } } label: {
+                        HStack(spacing: 8) {
+                            if store.isLoading { ProgressView() }
+                            Text(store.isLoading ? "Checking Apple account…" : "Check Apple account")
+                        }
+                    }
+                        .buttonStyle(GiftOutlineButtonStyle())
                         .disabled(store.isLoading || store.isPurchasing)
                         .accessibilityIdentifier("commerceConnectAppStore")
                 } else if store.offers.isEmpty && !store.isLoading {
@@ -265,22 +283,27 @@ public struct CommerceWalletView: View {
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
         .task { if store.environment == nil && !store.isLoading && !store.needsAppStoreConnection { await store.start() }; await refresh() }
         .onChange(of: store.fulfillmentRevision) { _ in Task { await refresh() } }
-        .onChange(of: store.environment) { value in if value != nil { Task { await refresh() } } }
+        .onChange(of: store.environment) { _ in balance = nil; inventory = []; hasMore = false; Task { await refresh() } }
         .sheet(item: $viewedGift) { item in GiftPresentationView(gift: item.productSnapshot, title: "Your gift") }
     }
     private func moreInventory() async {
         guard let environment = store.environment, let last = inventory.last else { return }
-        switch await store.commerce.inventory(environment: environment, before: last.id) {
+        let response = await store.commerce.inventory(environment: environment, before: last.id)
+        guard store.environment == environment, !Task.isCancelled else { return }
+        switch response {
         case .success(let next): inventory += next; hasMore = next.count == 30
         case .failure(let failure): error = failure.message
         }
     }
     private func refresh() async {
-        guard let environment = store.environment else { return }
+        guard let environment = store.environment else { balance = nil; inventory = []; return }
         async let wallet = store.commerce.balance(environment: environment)
         async let owned = store.commerce.inventory(environment: environment)
-        switch await wallet { case .success(let value): balance=value; case .failure(let failure): error=failure.message }
-        switch await owned { case .success(let value): inventory=value; hasMore = value.count == 30; case .failure(let failure): error=failure.message }
+        let (walletResult, ownedResult) = await (wallet, owned)
+        guard store.environment == environment, !Task.isCancelled else { return }
+        error = nil
+        switch walletResult { case .success(let value): balance=value; case .failure(let failure): balance=nil; error=failure.message }
+        switch ownedResult { case .success(let value): inventory=value; hasMore = value.count == 30; case .failure(let failure): error=failure.message }
     }
 }
 

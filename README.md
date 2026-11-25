@@ -665,7 +665,8 @@ delivery.stop()
 received.stop()
 ```
 
-`AppleGiftStore` derives Production/Sandbox from Apple's verified app transaction,
+`AppleGiftStore` derives Production/Sandbox from Apple's verified app transaction
+or a verified purchase with matching durable server fulfillment,
 uses the server-issued `appAccountToken`, displays StoreKit's localized price,
 and finishes a purchase only after matching durable server fulfillment. Pending
 approval and cancellation grant nothing. Local Xcode StoreKit receipts cannot
@@ -677,13 +678,29 @@ for the same intended gift. The queue is partitioned by app key and user; stop
 both stores before switching identities. App key rotation requires recovering
 any old queue before dropping the old namespace.
 
-If Apple cannot verify the app transaction at startup, `needsAppStoreConnection`
-becomes true and the shared views offer **Connect to App Store**. Custom views
-should call `connectToAppStore()` only after an explicit tap: Apple's
+An unavailable app-download receipt no longer blocks catalog browsing or the
+normal StoreKit purchase sheet. `catalogProducts()` browses the production catalog
+until Apple identifies the environment; this read-only choice never selects a
+wallet or authorizes sending a gift. Balances and owned gifts wait for a verified
+environment. Hosts should expose the shop based on Catalog configuration, not
+on whether Apple has already verified the app receipt.
+
+When the app receipt is unavailable, the SDK checks both purchase contexts and
+offers only packs enabled with identical credit quantities in both environments,
+with the same app, currency and account-token binding. `Product.purchase` can then
+perform Apple's normal authentication. An explicitly unverified receipt or local
+StoreKit environment still blocks checkout. Verified purchase transactions are
+bound to the app/account and independently verified by the server before delivery;
+test money never becomes production money. If either environment is disabled,
+Apple must identify the environment before checkout can be enabled.
+
+`needsAppStoreConnection` stays true until verification succeeds. The wallet offers
+an optional **Check Apple account** action for existing balances. Custom views
+must call `connectToAppStore()` only after an explicit tap: Apple's
 `AppTransaction.refresh()` may display its sign-in sheet. Automatic `start()`
-never invokes that prompt or guesses a purchase environment. Product-loading
-failures offer a separate reload action. Use TestFlight or a Sandbox Apple
-Account with a development-signed build for real server-verified purchase tests.
+never invokes that prompt. Product-loading failures remain retryable. Xcode and
+TestFlight installations still use Apple's testing environment; publication uses
+production. A server flag cannot change an installation's signing/distribution.
 
 `ReceivedGiftsView` pages through the full history and supports pull-to-refresh.
 Custom collection views can use `hasMore`, `isLoading`, `errorMessage` and
