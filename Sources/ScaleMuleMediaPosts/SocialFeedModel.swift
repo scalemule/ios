@@ -439,9 +439,11 @@ public final class SocialFeedModel: ObservableObject {
     /// buffered player, the poster) are dropped now; a restored video is
     /// streamed again.
     ///
-    /// Returns Social's answer (say "You can restore it for
-    /// `daysToRestore()` days"), or nil when the post could not be deleted:
-    /// it stays in the feed and `error` says why.
+    /// Returns Social's answer, or nil when the post could not be deleted:
+    /// it stays in the feed and `error` says why. Say "You can restore it
+    /// for `daysToRestore()` days" only when that is not nil: where the app
+    /// lets only its team restore (`restorableBy`), the post is gone for the
+    /// person, so say before asking that a delete cannot be undone.
     @discardableResult
     public func deleteOwnPost(_ post: MediaPost) async -> PostDeletion? {
         guard post.isMine, let social else { return nil }
@@ -457,16 +459,56 @@ public final class SocialFeedModel: ObservableObject {
         }
     }
 
-    /// A post was deleted somewhere else in the app (another screen's model):
-    /// take it out of this feed. Unlike `hideReported`, a later
-    /// `showRestored` or a reload can show it again.
+    /// Hide one of the person's own posts (`SocialService.hidePost`): it is
+    /// gone for everyone, this feed and the person's own page included,
+    /// until they show it again (`unhideOwnPost` for an Undo, or
+    /// `HiddenPostsModel` for the list). It leaves the feed at once.
+    ///
+    /// Returns Social's answer, or nil when the post could not be hidden: it
+    /// stays in the feed and `error` says why (an app that does not offer
+    /// hiding answers with a sentence that says so).
+    @discardableResult
+    public func hideOwnPost(_ post: MediaPost) async -> PostHiding? {
+        guard post.isMine, let social else { return nil }
+        switch await social.hidePost(id: post.id) {
+        case .success(let hiding):
+            removeDeleted(postId: post.id)
+            return hiding
+        case .failure(let apiError):
+            logger.error("Post hide failed: \(apiError.message, privacy: .public)")
+            error = FeedError(message: apiError.userFacingMessage)
+            return nil
+        }
+    }
+
+    /// Show a post the person just hid again (an Undo). It returns to its
+    /// place in the feed. False when it could not be shown: `error` says
+    /// why, and the post stays among the hidden posts.
+    @discardableResult
+    public func unhideOwnPost(_ post: MediaPost) async -> Bool {
+        guard post.isMine, let social else { return false }
+        switch await social.unhidePost(id: post.id) {
+        case .success(let shown):
+            showRestored(MediaPost(post: shown, currentUserId: currentUserId) ?? post)
+            return true
+        case .failure(let apiError):
+            logger.error("Post unhide failed: \(apiError.message, privacy: .public)")
+            error = FeedError(message: apiError.userFacingMessage)
+            return false
+        }
+    }
+
+    /// A post was deleted or hidden somewhere else in the app (another
+    /// screen's model): take it out of this feed. Unlike `hideReported`, a
+    /// later `showRestored` or a reload can show it again.
     public func removeDeleted(postId: String) {
         items.removeAll { $0.id == postId }
         newItems.removeAll { $0.id == postId }
         commentCounts[postId] = nil
     }
 
-    /// A deleted post was restored (`RecentlyDeletedModel.onRestored`): show
+    /// A hidden post is showing again (`HiddenPostsModel.onUnhidden`) or a
+    /// deleted post was restored (`RecentlyDeletedModel.onRestored`): show
     /// it again where it belongs, newest first. Everyone's feed and "mine"
     /// take it when it falls inside what is loaded (or everything is
     /// loaded); an older one arrives with its page. "Following" and
