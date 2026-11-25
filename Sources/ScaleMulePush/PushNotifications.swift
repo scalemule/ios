@@ -50,6 +50,8 @@ public enum PushPermission: String, Sendable {
     @Published public private(set) var lastError: String?
 
     /// The app owns navigation. Never open arbitrary payload URLs automatically.
+    /// Called for a matching notification while the app is active, before presentation.
+    public var onForegroundNotification: (([AnyHashable: Any]) -> Void)?
     public var onNotificationTap: (([AnyHashable: Any]) -> Void)?
     public var foregroundPresentationOptions: UNNotificationPresentationOptions = [.banner, .list, .badge, .sound]
 
@@ -260,6 +262,7 @@ public enum PushPermission: String, Sendable {
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         Task { @MainActor in
             let matches = currentUserId.map { Self.matchesRecipient(notification.request.content.userInfo, userId: $0) } ?? false
+            if isEnabled && matches { onForegroundNotification?(notification.request.content.userInfo) }
             completionHandler(isEnabled && matches ? foregroundPresentationOptions : [])
         }
     }

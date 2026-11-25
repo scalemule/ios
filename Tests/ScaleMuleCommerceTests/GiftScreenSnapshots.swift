@@ -27,6 +27,7 @@ final class GiftScreenSnapshots: XCTestCase {
 
     private func write<V: View>(_ name: String, height: CGFloat, @ViewBuilder _ view: () -> V) throws {
         guard let folder = ProcessInfo.processInfo.environment["GIFT_SNAPSHOT_DIR"] else { throw XCTSkip("GIFT_SNAPSHOT_DIR is not set") }
+        try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
         let screen = view()
             .frame(width: 393, height: height, alignment: .top)
             .background(Color.black)
@@ -98,6 +99,40 @@ final class GiftScreenSnapshots: XCTestCase {
                     Button("Send to Maya") {}.buttonStyle(GiftPrimaryButtonStyle())
                 }.padding(16).background(Color.white.opacity(0.1))
             }
+        }
+    }
+
+
+    private func received(_ slug: String, name: String) throws -> DigitalGift {
+        let url = "https://example.com/\(slug).png"
+        return try JSONDecoder().decode(DigitalGift.self, from: Data("""
+        {"id":"gift-\(slug)","sender_id":"person","recipient_id":"me","product_id":"p","environment":"Sandbox","quantity":1,"total_minor":20,"currency_code":"FHC","status":"delivered","product_snapshot":{"display_name":"\(name)","artwork_url":"\(url)","kind":"both"},"created_at":"2026-11-25T08:07:47Z","delivered_at":"2026-11-25T08:07:47Z"}
+        """.utf8))
+    }
+
+    func testReceivedCollection() throws {
+        let coffee = try received("coffee", name: "Coffee")
+        let rose = try received("rose", name: "Rose")
+        try write("received-collection", height: 730) {
+            VStack(alignment: .leading, spacing: 20) {
+                Text("Your gifts").font(.largeTitle.bold())
+                Text("From people who appreciate your moments.").foregroundStyle(.secondary)
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                    ReceivedGiftCard(gift: coffee, sender: GiftRecipient(id: "a", name: "Plamen")) { art("coffee") }
+                    ReceivedGiftCard(gift: rose, sender: GiftRecipient(id: "b", name: "Мария")) { art("rose") }
+                }
+            }.padding(18)
+        }
+    }
+
+    func testArrival() throws {
+        let coffee = try received("coffee", name: "Coffee")
+        try write("gift-arrival", height: 780) {
+            VStack {
+                GiftMomentContent(gift: coffee, sender: GiftRecipient(id: "a", name: "Plamen"), isNew: true) { art("coffee") }
+                Spacer()
+                Button("See your gifts") {}.buttonStyle(GiftPrimaryButtonStyle())
+            }.padding(24)
         }
     }
 
