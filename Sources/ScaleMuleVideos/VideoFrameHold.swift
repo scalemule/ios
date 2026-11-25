@@ -12,12 +12,7 @@ final class VideoFrameHold {
     var onFrame: ((UIImage) -> Void)?
     var isVisible = false { didSet { updateClock() } }
     private weak var player: AVPlayer?
-    private weak var item: AVPlayerItem?
-    private var output: AVPlayerItemVideoOutput?
-    private var observation: NSKeyValueObservation?
     private var displayLink: CADisplayLink?
-    private var transform: CGAffineTransform?
-    private var metadata: Task<Void, Never>?
     private var rendering: Task<Void, Never>?
     private var generation = 0
     private static let context = CIContext(options: [.cacheIntermediates: false])
@@ -30,44 +25,14 @@ final class VideoFrameHold {
 
     func attach(_ player: AVPlayer?) {
         generation += 1
-        observation = nil
-        metadata?.cancel()
         rendering?.cancel()
         rendering = nil
-        detachOutput()
         self.player = player
-        observation = player?.observe(\.currentItem, options: [.initial, .new]) { [weak self] _, _ in
-            DispatchQueue.main.async { self?.attachCurrentItem() }
-        }
         updateClock()
     }
 
-    private func attachCurrentItem() {
-        guard item !== player?.currentItem else { return }
-        detachOutput()
-        guard let item = player?.currentItem else { return }
-        self.item = item
-        transform = nil
-        let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
-        item.add(output)
-        self.output = output
-        metadata?.cancel()
-        metadata = Task { [weak self, weak item] in
-            guard let item,
-                  let track = try? await item.asset.loadTracks(withMediaType: .video).first,
-                  let transform = try? await track.load(.preferredTransform),
-                  !Task.isCancelled, self?.item === item else { return }
-            self?.transform = transform
-        }
-    }
-
-    private func detachOutput() {
-        if let output { item?.remove(output) }
-        output = nil
-        item = nil
-    }
-
     private func updateClock() {
+        guard #available(iOS 18.0, *) else { return }
         guard isVisible, player != nil else {
             displayLink?.invalidate()
             displayLink = nil
@@ -83,10 +48,11 @@ final class VideoFrameHold {
     }
 
     private func capture(_ link: CADisplayLink) {
-        guard player?.rate != 0, rendering == nil, let output, let transform else { return }
-        let time = output.itemTime(forHostTime: link.timestamp)
-        guard output.hasNewPixelBuffer(forItemTime: time),
-              let buffer = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil) else { return }
+        guard #available(iOS 18.0, *), player?.rate != 0, rendering == nil,
+              let sample = player?.videoOutput?.taggedBuffers(forHostTime: CMTime(seconds: link.timestamp, preferredTimescale: 1_000_000_000)),
+              let tagged = sample.taggedBufferGroup.first,
+              case .pixelBuffer(let buffer) = tagged.buffer else { return }
+        let transform = sample.activeConfiguration.preferredTransform
         let generation = generation
         let context = Self.context
         rendering = Task { [weak self] in
@@ -106,9 +72,7 @@ final class VideoFrameHold {
 
     deinit {
         displayLink?.invalidate()
-        metadata?.cancel()
         rendering?.cancel()
-        if let output { item?.remove(output) }
     }
 }
 #endif

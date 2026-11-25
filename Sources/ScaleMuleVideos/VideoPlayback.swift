@@ -136,7 +136,16 @@ public final class LoopingPlayer {
     /// Called on the main actor each time a loop ends.
     public var onLoop: (() -> Void)?
 
-    public init() {}
+    public init() {
+        // Configure the player's output before loading any queue items. Adding
+        // or removing AVPlayerItem outputs while a looper owns its replicas can
+        // interrupt the queue. This output spans replicas without mutating them.
+        if #available(iOS 18.0, *) {
+            let specification = AVVideoOutputSpecification(tagCollections: [.monoscopicForVideoOutput()])
+            specification.defaultOutputSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+            player.videoOutput = AVPlayerVideoOutput(specification: specification)
+        }
+    }
 
     /// Actually prime AVFoundation's media pipeline while paused. Merely
     /// assigning an item and a buffer-duration hint does not perform a preroll.
