@@ -5,6 +5,7 @@ let package = Package(
     name: "ScaleMule",
     platforms: [.iOS(.v16), .macOS(.v13)],
     products: [
+        .library(name: "ScaleMuleCommerce", targets: ["ScaleMuleCommerce"]),
         .library(name: "ScaleMuleCore", targets: ["ScaleMuleCore"]),
         .library(name: "ScaleMuleAuth", targets: ["ScaleMuleAuth"]),
         .library(name: "ScaleMulePermissions", targets: ["ScaleMulePermissions"]),
@@ -28,6 +29,8 @@ let package = Package(
     ],
     dependencies: [],
     targets: [
+        .testTarget(name: "ScaleMuleCommerceTests", dependencies: ["ScaleMuleCommerce", "ScaleMuleCore", "ScaleMuleTestHelpers"], path: "Tests/ScaleMuleCommerceTests"),
+        .target(name: "ScaleMuleCommerce", dependencies: ["ScaleMuleCore"], path: "Sources/ScaleMuleCommerce"),
         .target(name: "ScaleMuleCore", path: "Sources/ScaleMuleCore"),
         .target(name: "ScaleMuleAuth", dependencies: ["ScaleMuleCore"], path: "Sources/ScaleMuleAuth"),
         .target(name: "ScaleMulePermissions", dependencies: ["ScaleMuleCore"], path: "Sources/ScaleMulePermissions"),
@@ -47,7 +50,7 @@ let package = Package(
         .target(name: "ScaleMuleMediaPosts", dependencies: ["ScaleMuleCore", "ScaleMuleSocial", "ScaleMulePhotos", "ScaleMuleVideos", "ScaleMuleMediaQueue", "ScaleMuleLocation", "ScaleMuleProfiles"], path: "Sources/ScaleMuleMediaPosts", resources: [.process("PrivacyInfo.xcprivacy")]),
         .target(name: "ScaleMuleRealtime", dependencies: ["ScaleMuleCore"], path: "Sources/ScaleMuleRealtime"),
         .target(name: "ScaleMuleChat", dependencies: ["ScaleMuleCore", "ScaleMuleRealtime"], path: "Sources/ScaleMuleChat"),
-        .target(name: "ScaleMule", dependencies: ["ScaleMuleRealtime", "ScaleMuleChat", "ScaleMuleCore", "ScaleMuleAuth", "ScaleMulePermissions", "ScaleMuleWorkspaces", "ScaleMuleSocial", "ScaleMuleStorage", "ScaleMulePhotos", "ScaleMuleVideos", "ScaleMuleCapture", "ScaleMuleMediaEditing", "ScaleMuleMediaQueue", "ScaleMuleLocation", "ScaleMuleFeed", "ScaleMuleSafety", "ScaleMuleProfiles", "ScaleMuleMediaPosts", "ScaleMulePush"], path: "Sources/ScaleMule"),
+        .target(name: "ScaleMule", dependencies: ["ScaleMuleCommerce","ScaleMuleRealtime", "ScaleMuleChat", "ScaleMuleCore", "ScaleMuleAuth", "ScaleMulePermissions", "ScaleMuleWorkspaces", "ScaleMuleSocial", "ScaleMuleStorage", "ScaleMulePhotos", "ScaleMuleVideos", "ScaleMuleCapture", "ScaleMuleMediaEditing", "ScaleMuleMediaQueue", "ScaleMuleLocation", "ScaleMuleFeed", "ScaleMuleSafety", "ScaleMuleProfiles", "ScaleMuleMediaPosts", "ScaleMulePush"], path: "Sources/ScaleMule"),
         .testTarget(name: "ScaleMulePushTests", dependencies: ["ScaleMulePush", "ScaleMuleCore", "ScaleMuleTestHelpers"], path: "Tests/ScaleMulePushTests"),
         .testTarget(name: "ScaleMuleCaptureTests", dependencies: ["ScaleMuleCapture"], path: "Tests/ScaleMuleCaptureTests"),
         .target(name: "ScaleMuleTestHelpers", dependencies: ["ScaleMuleCore"], path: "Tests/Helpers"),
