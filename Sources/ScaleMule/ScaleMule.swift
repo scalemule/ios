@@ -17,3 +17,4 @@
 @_exported import ScaleMuleMediaPosts
 @_exported import ScaleMuleRealtime
 @_exported import ScaleMuleChat
+@_exported import ScaleMuleConnections

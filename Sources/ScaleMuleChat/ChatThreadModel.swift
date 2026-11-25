@@ -24,6 +24,10 @@ public final class ChatThreadModel: ObservableObject {
     @Published public private(set) var otherLastRead: Date?
     /// The server refused the last send because one of the two blocked the other.
     @Published public private(set) var cannotMessage = false
+    /// The app lets only connected people message, and these two are not
+    /// connected (Chat answered `CONNECTION_REQUIRED`). Offer "Connect"
+    /// (`ScaleMuleConnections`), then call `connectionChanged()`.
+    @Published public private(set) var needsConnection = false
     @Published public var errorMessage: String?
 
     public let peerUserId: String
@@ -118,8 +122,30 @@ public final class ChatThreadModel: ObservableObject {
             conversation = found
             return true
         case .failure(let error):
-            errorMessage = error.userFacingMessage
+            if Self.needsConnection(error) {
+                needsConnection = true
+                errorMessage = nil
+            } else {
+                errorMessage = error.userFacingMessage
+            }
             return false
+        }
+    }
+
+    /// Chat's refusal for two people who are not connected.
+    static func needsConnection(_ error: ApiError) -> Bool {
+        error.rawCode == "CONNECTION_REQUIRED"
+    }
+
+    /// The two became connected (or stopped being): try again.
+    public func connectionChanged() async {
+        needsConnection = false
+        cannotMessage = false
+        errorMessage = nil
+        if hasLoaded {
+            await catchUp()
+        } else if isOnScreen {
+            await start()
         }
     }
 
@@ -274,6 +300,7 @@ public final class ChatThreadModel: ObservableObject {
             }
             hasLoaded = true
             cannotMessage = false
+            needsConnection = false
             errorMessage = nil
             newestId = sent.id
             if oldestId == nil { oldestId = sent.id }
@@ -282,7 +309,11 @@ public final class ChatThreadModel: ObservableObject {
             return true
         case .failure(let error):
             fail(localId)
-            if error.statusCode == 403 {
+            if Self.needsConnection(error) {
+                // The connection ended: what was said stays readable.
+                needsConnection = true
+                errorMessage = nil
+            } else if error.statusCode == 403 {
                 cannotMessage = true
                 errorMessage = "You can't send messages to this person."
             } else {
