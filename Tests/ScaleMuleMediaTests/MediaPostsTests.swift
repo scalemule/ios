@@ -528,72 +528,135 @@ final class SocialFeedModelTests: XCTestCase {
         XCTAssertEqual(model.likedIds, ["p8"])
     }
 
-    func testDeletesYourOwnPostAndItsPhoto() async {
+    /// What Social answers to a delete (scalemule-social `DeletePostResponse`).
+    private static let keptThirtyDays = #"{"deleted":true,"restorable_until":"2026-12-25T08:00:00Z","restorable_by":"author"}"#
+    private static let videoPost = #"{"posts":[\#(postJSON(id: "clip", user: "u1", media: "vid-9", metadata: #"{"kind":"video","author_name":"Maya","width":1080,"height":1920,"duration":8}"#))]}"#
+
+    func testDeletingYourOwnPhotoPostLeavesThePhotoToSocial() async {
         server.start { request in
-            request.httpMethod == "GET" ? ok(page(["own"], user: "u1")) : emptyOK
+            request.httpMethod == "GET" ? ok(page(["own"], user: "u1")) : ok(Self.keptThirtyDays)
         }
         let model = await model()
         await model.loadFeed()
-        await model.deleteOwnPost(model.items[0])
-        XCTAssertTrue(model.items.isEmpty)
-        XCTAssertTrue(server.requests.contains("DELETE /v1/social/posts/own"))
-        XCTAssertTrue(server.requests.contains("DELETE /v1/photos/m-own"))
-        XCTAssertFalse(server.requests.contains { $0.hasPrefix("DELETE /v1/videos") }, "a photo post deletes no video")
+        let deletion = await model.deleteOwnPost(model.items[0])
+        XCTAssertTrue(model.items.isEmpty, "gone from the feed at once")
+        XCTAssertNil(model.error)
+        XCTAssertEqual(deletion?.restorableBy, .author)
+        XCTAssertEqual(deletion?.daysToRestore(now: ISO8601DateFormatter().date(from: "2026-11-25T08:00:01Z")!), 30)
+        XCTAssertEqual(server.requests.filter { !$0.hasPrefix("GET") }, ["DELETE /v1/social/posts/own"],
+                       "only the post: a restored post must still have its photo")
     }
 
-    private static let videoPost = #"{"posts":[\#(postJSON(id: "clip", user: "u1", media: "vid-9", metadata: #"{"kind":"video","author_name":"Maya","width":1080,"height":1920,"duration":8}"#))]}"#
-
-    func testDeletesYourOwnVideoPostAndItsVideoEverywhere() async {
+    func testDeletingYourOwnVideoPostLeavesTheVideoToSocial() async {
         server.start { request in
-            switch (request.httpMethod ?? "", request.url!.path) {
-            case ("GET", _): return ok(Self.videoPost)
-            case ("DELETE", "/v1/videos/vid-9"):
-                return TestFixtures.mockResponse(statusCode: 200, json: #"{"video_id":"vid-9","deleted":true}"#)
-            default: return emptyOK
-            }
+            request.httpMethod == "GET" ? ok(Self.videoPost) : ok(Self.keptThirtyDays)
         }
         let model = await model()
         await model.loadFeed()
         XCTAssertEqual(model.items.first?.isVideo, true)
-        await model.deleteOwnPost(model.items[0])
+        let deletion = await model.deleteOwnPost(model.items[0])
         XCTAssertTrue(model.items.isEmpty)
         XCTAssertNil(model.error)
-        let deletes = server.requests.filter { $0.hasPrefix("DELETE") }
-        XCTAssertEqual(deletes, ["DELETE /v1/videos/vid-9", "DELETE /v1/social/posts/clip"], "the video first, then the post; no photo")
+        XCTAssertNotNil(deletion?.restorableUntil)
+        XCTAssertEqual(server.requests.filter { !$0.hasPrefix("GET") }, ["DELETE /v1/social/posts/clip"],
+                       "no call to Video: Social has the video deleted when the post is removed for good")
     }
 
-    func testAVideoAlreadyGoneStillDeletesThePost() async {
+    func testAnAppThatKeepsNothingAlsoLeavesTheMediaToSocial() async {
         server.start { request in
-            switch (request.httpMethod ?? "", request.url!.path) {
-            case ("GET", _): return ok(Self.videoPost)
-            case ("DELETE", "/v1/videos/vid-9"):
-                return TestFixtures.mockResponse(statusCode: 404, json: #"{"success":false,"error":{"message":"Video not found"}}"#)
-            default: return emptyOK
-            }
+            request.httpMethod == "GET" ? ok(Self.videoPost) : ok(#"{"deleted":true,"restorable_until":null,"restorable_by":"nobody"}"#)
         }
         let model = await model()
         await model.loadFeed()
-        await model.deleteOwnPost(model.items[0])
+        let deletion = await model.deleteOwnPost(model.items[0])
         XCTAssertTrue(model.items.isEmpty)
-        XCTAssertNil(model.error)
-        XCTAssertTrue(server.requests.contains("DELETE /v1/social/posts/clip"))
+        XCTAssertNil(deletion?.restorableUntil)
+        XCTAssertNil(deletion?.daysToRestore(), "nothing to restore: the app says only that it is deleted")
+        XCTAssertEqual(server.requests.filter { !$0.hasPrefix("GET") }, ["DELETE /v1/social/posts/clip"])
     }
 
-    func testAVideoThatCouldNotBeDeletedKeepsItsPost() async {
+    func testAPostThatCouldNotBeDeletedStaysAndSaysWhy() async {
         server.start { request in
-            switch (request.httpMethod ?? "", request.url!.path) {
-            case ("GET", _): return ok(Self.videoPost)
-            case ("DELETE", "/v1/videos/vid-9"):
-                return TestFixtures.mockResponse(statusCode: 403, json: #"{"success":false,"error":{"code":"FORBIDDEN","message":"Not allowed"}}"#)
-            default: return emptyOK
-            }
+            request.httpMethod == "GET"
+                ? ok(page(["own"], user: "u1"))
+                : TestFixtures.mockResponse(statusCode: 500, json: #"{"success":false,"error":{"code":"INTERNAL_ERROR","message":"An internal error occurred"}}"#)
         }
         let model = await model()
         await model.loadFeed()
-        await model.deleteOwnPost(model.items[0])
-        XCTAssertEqual(model.items.map(\.id), ["clip"], "kept, so deleting again finishes the job")
-        XCTAssertNotNil(model.error)
-        XCTAssertFalse(server.requests.contains("DELETE /v1/social/posts/clip"))
+        let deletion = await model.deleteOwnPost(model.items[0])
+        XCTAssertNil(deletion)
+        XCTAssertEqual(model.items.map(\.id), ["own"], "kept, so deleting again can work")
+        XCTAssertEqual(model.error?.localizedDescription, "Something went wrong on our side. Please try again in a minute.")
+        XCTAssertFalse(server.requests.contains { $0.hasPrefix("DELETE /v1/photos") || $0.hasPrefix("DELETE /v1/videos") })
+    }
+
+    func testSomeoneElsesPostIsNeverDeleted() async {
+        server.start { _ in ok(page(["theirs"], user: "u2")) }
+        let model = await model()
+        await model.loadFeed()
+        let deletion = await model.deleteOwnPost(model.items[0])
+        XCTAssertNil(deletion)
+        XCTAssertEqual(model.items.map(\.id), ["theirs"])
+        XCTAssertFalse(server.requests.contains { $0.hasPrefix("DELETE") })
+    }
+
+    private func own(_ id: String, at created: String) throws -> MediaPost {
+        let json = postJSON(id: id, user: "u1").replacingOccurrences(of: "2026-11-22T10:00:00Z", with: created)
+        return try XCTUnwrap(MediaPost(post: socialPost(json), currentUserId: "u1"))
+    }
+
+    func testARestoredPostReturnsToItsPlaceInTheFeed() async throws {
+        // a, b, c are all from 10:00 on the 22nd; the feed has no more pages.
+        server.start { _ in ok(page(["a", "b"])) }
+        let model = await model()
+        await model.loadFeed()
+        XCTAssertFalse(model.hasMore)
+
+        let newer = try own("newer", at: "2026-11-23T09:00:00Z")
+        model.showRestored(newer)
+        model.showRestored(newer)
+        XCTAssertEqual(model.items.map(\.id), ["newer", "a", "b"], "newest first, once")
+
+        let older = try own("older", at: "2026-11-01T09:00:00Z")
+        model.showRestored(older)
+        XCTAssertEqual(model.items.map(\.id), ["newer", "a", "b", "older"], "everything is loaded: it goes at the end")
+    }
+
+    func testARestoredPostOlderThanTheLoadedPagesWaitsForItsPage() async throws {
+        server.start { _ in ok(page(["a", "b", "c"])) }
+        let model = await model()
+        await model.loadFeed()
+        XCTAssertTrue(model.hasMore)
+        model.showRestored(try own("older", at: "2026-11-01T09:00:00Z"))
+        XCTAssertEqual(model.items.map(\.id), ["a", "b", "c"], "its page brings it")
+    }
+
+    func testAPostDeletedOnAnotherScreenLeavesAndCanComeBack() async throws {
+        server.start { _ in ok(page(["mine", "b"], user: "u1")) }
+        let model = await model()
+        await model.loadFeed()
+        let mine = model.items[0]
+        model.removeDeleted(postId: mine.id)
+        XCTAssertEqual(model.items.map(\.id), ["b"])
+        model.showRestored(mine)
+        XCTAssertEqual(model.items.map(\.id), ["mine", "b"])
+
+        // Hidden as a report would hide it (older app versions did that for
+        // a post deleted on another screen): restoring shows it again.
+        model.hideReported(mine)
+        XCTAssertEqual(model.items.map(\.id), ["b"])
+        model.showRestored(mine)
+        await model.loadFeed()
+        XCTAssertEqual(model.items.map(\.id), ["mine", "b"])
+    }
+
+    func testARestoredPostIsNotPutUnderFollowing() async throws {
+        server.start { _ in ok(page(["a"])) }
+        let model = await model()
+        model.filter = .following
+        await waitUntil { model.items.count == 1 }
+        model.showRestored(try own("mine", at: "2026-11-23T09:00:00Z"))
+        XCTAssertEqual(model.items.map(\.id), ["a"], "Following never holds your own posts")
     }
 
     func testInsertsYourNewPostAtTheTop() async throws {

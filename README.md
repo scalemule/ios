@@ -436,7 +436,15 @@ feed.startPolling()                                                     // feed.
 feed.setBlockedAuthors(blockedIds); feed.hideReported(post)
 await feed.toggleLike(post); feed.likeCount(post); feed.isLiked(post)
 await feed.block(post) { await blocks.block(post.authorId, by: user.id) }
-await feed.deleteOwnPost(post)
+if let deletion = await feed.deleteOwnPost(post),                      // the post only, never its photo or video
+   let days = deletion.daysToRestore() { say("Deleted. You can restore it for \(days) days.") }
+
+// 4b. "Recently deleted": the person's deleted posts, the days each has left, Restore.
+@StateObject var deleted = RecentlyDeletedModel()
+deleted.attach(social: social, currentUserId: user.id)
+deleted.onRestored = { feed.showRestored($0) }                          // back in the feed, in its place
+await deleted.load()                                                    // deleted.items: post, restorableUntil, daysLeft()
+await deleted.restore(item)                                             // gone at once; back with deleted.errorMessage if refused
 
 // 5. Draw it: FeedPager (cells reused, next posts preloaded) and the media views.
 FeedPager(items: feed.items, activeID: $activeId,
@@ -486,13 +494,24 @@ let avatarURL = post.isMine ? user.avatarURL : await people.profile(post.authorI
 - `RemoteVideoView` plays while `isActive`, pauses on tap and remembers the
   mute button (`muteKey`). Both views are neutral (white on black); text is
   in `labels`. `ProfileAvatarView` takes your colours and font.
-- `deleteOwnPost` on a video post deletes the video first with
-  `VideosService.delete(id:)` (Video removes every stored copy: streaming
-  copies, poster, preview, the Storage original, statistics, CDN copies;
-  this phone's file, playback link, buffered player and poster go too), then
-  the post. A video already gone (404) counts as deleted; any other failure
-  keeps the post and sets `error`, so deleting again finishes the job. A photo
-  post deletes the post, then the photo.
+- `deleteOwnPost` deletes the post and nothing else. Social hides it at once
+  and keeps it, with its comments, likes, photo and video, for as many days as
+  the app decided (30 unless it set something else; `PostDeletion.restorableUntil`
+  says until when). After that Social removes the post for good and has its
+  photo and video deleted in ScaleMule Photos and Video (unless another post
+  of the author uses them); an app that keeps deleted posts for 0 days gets
+  that right away. Never delete a post's media from the app
+  (`PhotosService.delete`, `VideosService.delete`): a restored post would
+  come back without its picture. A deleted video's copies on this phone are
+  dropped; a failure keeps the post in the feed and sets `error`.
+- `SocialService.deletedPosts()` lists the person's deleted posts that are
+  still kept, `restorePost(id:)` brings one back. `RecentlyDeletedModel` is
+  the list for a screen: it follows the app's rule (`canRestore` is false
+  where only the app's team, or nobody, restores), removes a restored post at
+  once and puts it back if the server refuses, and drops a post whose time
+  ran out (410 `RESTORE_WINDOW_EXPIRED`, or 404). `SocialFeedModel.showRestored`
+  puts a restored post back in the feed; `removeDeleted(postId:)` takes out a
+  post another screen deleted.
 
 ## Usage analytics for photos and videos
 

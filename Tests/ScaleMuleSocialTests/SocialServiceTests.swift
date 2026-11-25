@@ -152,17 +152,6 @@ final class SocialServiceTests: XCTestCase {
         XCTAssertTrue(liked.isSuccess)
     }
 
-    func testDeletePost() async {
-        let (_, social) = await signedIn()
-        MockURLProtocol.requestHandler = { request in
-            XCTAssertEqual(request.httpMethod, "DELETE")
-            XCTAssertEqual(request.url?.path, "/v1/social/posts/abc")
-            return TestFixtures.mockResponse(statusCode: 200, json: "{\"success\": true, \"data\": {\"deleted\": true}}")
-        }
-        let deleted = await social.deletePost(id: "abc")
-        XCTAssertTrue(deleted.isSuccess)
-    }
-
     func testUserPostsPath() async {
         let (_, social) = await signedIn()
         MockURLProtocol.requestHandler = { request in
