@@ -12,9 +12,10 @@ public struct GiftRecipient: Identifiable, Equatable, Sendable {
 
     /// Keep the host's ordering, removing self, blocked people and duplicates.
     public static func eligible(_ people: [GiftRecipient], currentUserID: String, blockedIDs: Set<String> = []) -> [GiftRecipient] {
-        let excluded = Set(blockedIDs.map { $0.lowercased() }).union([currentUserID.lowercased()])
+        let key: (String) -> String = { $0.replacingOccurrences(of: "-", with: "").lowercased() }
+        let excluded = Set(blockedIDs.map(key)).union([key(currentUserID)])
         var seen = excluded
-        return people.filter { !$0.id.isEmpty && seen.insert($0.id.lowercased()).inserted }
+        return people.filter { !$0.id.isEmpty && seen.insert(key($0.id)).inserted }
     }
 }
 
