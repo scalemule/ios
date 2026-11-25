@@ -6,13 +6,13 @@ import ScaleMuleTestHelpers
 final class CommerceTests: XCTestCase {
     static let product = #"{"id":"019b0000-0000-7000-8000-000000000001","sku":"wave","display_name":"Wave","description":"A little hello","kind":"both","artwork_url":"https://example.com/wave.png","animation_url":null,"version":1,"currency_code":"COIN","unit_price_minor":10}"#
     static let gift = #"{"id":"019b0000-0000-7000-8000-000000000002","sender_id":"sender","recipient_id":"recipient","product_id":"019b0000-0000-7000-8000-000000000001","environment":"Sandbox","quantity":1,"total_minor":10,"currency_code":"COIN","status":"delivered","product_snapshot":{"display_name":"Wave","artwork_url":"https://example.com/wave.png","animation_url":null,"kind":"both"},"created_at":"2026-11-24T10:00:00Z","delivered_at":"2026-11-24T10:00:01Z"}"#
-    private func signedIn() async -> CommerceService {
+    private func signedIn() async throws -> CommerceService {
         let (app, _) = createTestClient()
-        try? await app.sessionManager.setCredentials(CredentialSet(sessionToken: "buyer-session", sessionExpiresAt: Date().addingTimeInterval(3600)))
+        try await app.sessionManager.setCredentials(CredentialSet(sessionToken: "buyer-session", sessionExpiresAt: Date().addingTimeInterval(3600)))
         return CommerceService(app: app)
     }
     func testGiftUsesAuthenticatedSessionAndStableOperation() async throws {
-        let commerce = await signedIn()
+        let commerce = try await signedIn()
         var sentKeys: [String] = []
         MockURLProtocol.requestHandler = { request in
             XCTAssertEqual(request.url?.path, "/v1/catalog/goods/gifts")
@@ -45,7 +45,7 @@ final class CommerceTests: XCTestCase {
     }
     @MainActor
     func testGiftIsPersistedBeforeSendingAndReplaySurvivesRelaunch() async throws {
-        let commerce = await signedIn()
+        let commerce = try await signedIn()
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let queue = GiftDeliveryStore(commerce: commerce, storageDirectory: directory)
@@ -74,8 +74,8 @@ final class CommerceTests: XCTestCase {
         XCTAssertTrue(relaunched.lastDelivered?.isDelivered == true)
     }
     @MainActor
-    func testUnavailableAppTransactionOffersExplicitRecoveryWithoutGuessingEnvironment() async {
-        let commerce = await signedIn()
+    func testUnavailableAppTransactionOffersExplicitRecoveryWithoutGuessingEnvironment() async throws {
+        let commerce = try await signedIn()
         var refreshRequests: [Bool] = []
         MockURLProtocol.requestHandler = { _ in
             XCTFail("No server request is allowed before Apple verifies the environment")
@@ -105,8 +105,8 @@ final class CommerceTests: XCTestCase {
     }
 
     @MainActor
-    func testLogoutDuringAppleVerificationDiscardsResultAndConcurrentStart() async {
-        let commerce = await signedIn()
+    func testLogoutDuringAppleVerificationDiscardsResultAndConcurrentStart() async throws {
+        let commerce = try await signedIn()
         let started = expectation(description: "Apple verification started")
         var continuation: CheckedContinuation<CommerceEnvironment, Error>?
         var attempts = 0
