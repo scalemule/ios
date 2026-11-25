@@ -38,9 +38,13 @@ public struct MediaPost: Identifiable, Equatable, Codable, Sendable {
     /// The ScaleMule Photos id (photo) or ScaleMule Video id (video).
     public let mediaId: String
     public let authorId: String
-    /// The name to show: the post's author name, else `ownName` for your own
-    /// posts and `otherName` for others' (see `init(post:currentUserId:)`).
+    /// The name to show: the author's first name as they are now (Social's
+    /// `author`), else the name saved with the post, else `ownName` for your
+    /// own posts and `otherName` for others' (see `init(post:currentUserId:)`).
     public let authorName: String
+    /// The author's profile photo as Social gave it with the post; nil when
+    /// they have none or the server did not say.
+    public let authorAvatarURL: URL?
     public let kind: Kind
     public let width: Int?
     public let height: Int?
@@ -76,8 +80,10 @@ public struct MediaPost: Identifiable, Equatable, Codable, Sendable {
         self.mediaId = mediaId
         authorId = post.userId
         isMine = post.userId == currentUserId
-        authorName = post.metadataString(Keys.authorName).flatMap { $0.isEmpty ? nil : $0 }
+        authorName = post.author?.firstName
+            ?? post.metadataString(Keys.authorName).flatMap { $0.isEmpty ? nil : $0 }
             ?? (isMine ? ownName : otherName)
+        authorAvatarURL = post.author?.avatarURL
         location = post.location
         if let location = post.location {
             place = location.label.map { location.precision == .area ? "near \($0)" : $0 }
@@ -163,7 +169,7 @@ public struct MediaPost: Identifiable, Equatable, Codable, Sendable {
     // network answers. Older saved copies (Firehosy's FeedItem: photoId,
     // likesCount, likedAtLoad, latitude/longitude/precision/placeId) still read.
     private enum CodingKeys: String, CodingKey {
-        case id, mediaId, authorId, authorName, kind, width, height, caption, duration
+        case id, mediaId, authorId, authorName, authorAvatarURL, kind, width, height, caption, duration
         case location, place, likes, likedByMe, createdAt, isMine, comments, authorFollowed
         case photoId, likesCount, likedAtLoad, latitude, longitude, precision, placeId
     }
@@ -178,6 +184,7 @@ public struct MediaPost: Identifiable, Equatable, Codable, Sendable {
         }
         authorId = try c.decode(String.self, forKey: .authorId)
         authorName = try c.decode(String.self, forKey: .authorName)
+        authorAvatarURL = try c.decodeIfPresent(URL.self, forKey: .authorAvatarURL)
         kind = try c.decodeIfPresent(Kind.self, forKey: .kind) ?? .photo
         width = try c.decodeIfPresent(Int.self, forKey: .width)
         height = try c.decodeIfPresent(Int.self, forKey: .height)
@@ -211,6 +218,7 @@ public struct MediaPost: Identifiable, Equatable, Codable, Sendable {
         try c.encode(mediaId, forKey: .mediaId)
         try c.encode(authorId, forKey: .authorId)
         try c.encode(authorName, forKey: .authorName)
+        try c.encodeIfPresent(authorAvatarURL, forKey: .authorAvatarURL)
         try c.encode(kind, forKey: .kind)
         try c.encodeIfPresent(width, forKey: .width)
         try c.encodeIfPresent(height, forKey: .height)

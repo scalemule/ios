@@ -76,8 +76,11 @@ public struct SocialComment: Sendable, Decodable, Identifiable, Equatable {
     public let likesCount: Int
     /// ISO 8601 timestamp.
     public let createdAt: String
+    /// The author as they are now; nil from an older server or when Social
+    /// could not look the author up in time.
+    public let author: PostAuthor?
 
-    public init(id: String, postId: String, userId: String, parentCommentId: String? = nil, content: String, likesCount: Int = 0, createdAt: String) {
+    public init(id: String, postId: String, userId: String, parentCommentId: String? = nil, content: String, likesCount: Int = 0, createdAt: String, author: PostAuthor? = nil) {
         self.id = id
         self.postId = postId
         self.userId = userId
@@ -85,10 +88,11 @@ public struct SocialComment: Sendable, Decodable, Identifiable, Equatable {
         self.content = content
         self.likesCount = likesCount
         self.createdAt = createdAt
+        self.author = author
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, content
+        case id, content, author
         case postId = "post_id"
         case userId = "user_id"
         case parentCommentId = "parent_comment_id"
@@ -105,6 +109,7 @@ public struct SocialComment: Sendable, Decodable, Identifiable, Equatable {
         content = SocialText.unescape(try c.decodeIfPresent(String.self, forKey: .content) ?? "")
         likesCount = try c.decodeIfPresent(Int.self, forKey: .likesCount) ?? 0
         createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
+        author = (try? c.decodeIfPresent(PostAuthor.self, forKey: .author)) ?? nil
     }
 
     public var createdDate: Date? { SocialDate.parse(createdAt) }

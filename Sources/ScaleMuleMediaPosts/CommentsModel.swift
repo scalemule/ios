@@ -149,6 +149,11 @@ public final class CommentsModel: ObservableObject {
     }
 
     private func resolvePeople(_ list: [SocialComment]) async {
+        // Social sends each comment's author as they are now: no lookup for those.
+        for comment in list {
+            guard let author = comment.author else { continue }
+            people[comment.userId] = PublicProfile(id: comment.userId, name: author.name, username: nil, avatarURL: author.avatarURL)
+        }
         let wanted = Set(list.map(\.userId)).filter { people[$0] == nil }
         guard !wanted.isEmpty else { return }
         let found = await PeopleLookup.profiles(Array(wanted), in: profiles)

@@ -263,6 +263,61 @@ final class MediaPostPublisherTests: XCTestCase {
         XCTAssertNil(MediaPostAttributes.location(["lat": "37.77", "lon": "-122.42", "place": "SF"]))
     }
 
+    private func decodedPost(author: String?, savedName: String = "Old") throws -> SocialPost {
+        let json = """
+        {"id":"p1","user_id":"u1","content":"","media_ids":["m1"],"visibility":"public","likes_count":0,
+         "comments_count":0,"shares_count":0,"metadata":{"kind":"photo","author_name":"\(savedName)"},
+         "created_at":"2026-11-25T08:00:00Z"\(author.map { ",\"author\":\($0)" } ?? "")}
+        """
+        return try JSONDecoder().decode(SocialPost.self, from: Data(json.utf8))
+    }
+
+    func testAPostShowsItsAuthorAsTheyAreNowNotTheNameSavedWithIt() throws {
+        let renamed = try decodedPost(author: #"{"id":"u1","name":"D&#x27;Arcy Okafor","avatar_url":"https://cdn.example/a.jpg"}"#)
+        XCTAssertEqual(renamed.author?.name, "D'Arcy Okafor", "Auth's escaping is undone")
+        let post = try XCTUnwrap(MediaPost(post: renamed, currentUserId: "me"))
+        XCTAssertEqual(post.authorName, "D'Arcy")
+        XCTAssertEqual(post.authorAvatarURL, URL(string: "https://cdn.example/a.jpg"))
+
+        // Your own post follows your rename too.
+        XCTAssertEqual(MediaPost(post: renamed, currentUserId: "u1")?.authorName, "D'Arcy")
+
+        // An older server, or an author Social could not look up: the saved name.
+        let old = try XCTUnwrap(MediaPost(post: try decodedPost(author: nil), currentUserId: "me"))
+        XCTAssertEqual(old.authorName, "Old")
+        XCTAssertNil(old.authorAvatarURL)
+
+        // An author without a name keeps the saved name; a photo that is not https is dropped.
+        let unnamed = try decodedPost(author: #"{"id":"u1","name":"  ","avatar_url":"http://cdn.example/a.jpg"}"#)
+        XCTAssertNil(unnamed.author?.name)
+        XCTAssertNil(unnamed.author?.avatarURL)
+        XCTAssertEqual(MediaPost(post: unnamed, currentUserId: "me")?.authorName, "Old")
+
+        // Non-Latin names: first word, whole characters.
+        let cyrillic = try decodedPost(author: #"{"id":"u1","name":"Мария Иванова"}"#)
+        XCTAssertEqual(MediaPost(post: cyrillic, currentUserId: "me")?.authorName, "Мария")
+
+        // A malformed author never loses the post.
+        let broken = try decodedPost(author: #"{"name":42}"#)
+        XCTAssertNil(broken.author)
+        XCTAssertEqual(MediaPost(post: broken, currentUserId: "me")?.authorName, "Old")
+    }
+
+    func testTheSavedFeedPageKeepsTheAuthorPhoto() throws {
+        let post = try XCTUnwrap(MediaPost(post: try decodedPost(author: #"{"id":"u1","name":"Maya","avatar_url":"https://cdn.example/a.jpg"}"#), currentUserId: "me"))
+        let again = try JSONDecoder().decode(MediaPost.self, from: try JSONEncoder().encode(post))
+        XCTAssertEqual(again.authorName, "Maya")
+        XCTAssertEqual(again.authorAvatarURL, URL(string: "https://cdn.example/a.jpg"))
+    }
+
+    func testACommentCarriesItsAuthor() throws {
+        let json = #"{"id":"c1","post_id":"p1","user_id":"u2","content":"Nice","likes_count":0,"created_at":"2026-11-25T08:00:00Z","author":{"id":"u2","name":"Sam Rivera"}}"#
+        let comment = try JSONDecoder().decode(SocialComment.self, from: Data(json.utf8))
+        XCTAssertEqual(comment.author?.firstName, "Sam")
+        let bare = #"{"id":"c1","post_id":"p1","user_id":"u2","content":"Nice","likes_count":0,"created_at":"2026-11-25T08:00:00Z"}"#
+        XCTAssertNil(try JSONDecoder().decode(SocialComment.self, from: Data(bare.utf8)).author)
+    }
+
     func testAuthorNameIsTheFirstName() {
         XCTAssertEqual(MediaPostPublisher.authorName(for: AuthUser(id: "u1", username: "sammy", fullName: "Sam Rivera")), "Sam")
         XCTAssertEqual(MediaPostPublisher.authorName(for: AuthUser(id: "u1", username: "sammy")), "sammy")
