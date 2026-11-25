@@ -73,6 +73,75 @@ final class CommerceTests: XCTestCase {
         XCTAssertTrue(relaunched.pending.isEmpty)
         XCTAssertTrue(relaunched.lastDelivered?.isDelivered == true)
     }
+    @MainActor
+    func testUnavailableAppTransactionOffersExplicitRecoveryWithoutGuessingEnvironment() async {
+        let commerce = await signedIn()
+        var refreshRequests: [Bool] = []
+        MockURLProtocol.requestHandler = { _ in
+            XCTFail("No server request is allowed before Apple verifies the environment")
+            throw URLError(.badServerResponse)
+        }
+        let store = AppleGiftStore(commerce: commerce) { refresh in
+            refreshRequests.append(refresh)
+            throw NSError(domain: "SKInternalErrorDomain", code: 14)
+        }
+        await store.start()
+        XCTAssertEqual(refreshRequests, [false])
+        XCTAssertTrue(store.needsAppStoreConnection)
+        XCTAssertFalse(store.isLoading)
+        XCTAssertFalse(store.enabled)
+        XCTAssertNil(store.environment)
+        XCTAssertTrue(store.offers.isEmpty)
+        XCTAssertTrue(store.message?.contains("Connect to App Store") == true)
+        XCTAssertFalse(store.message?.contains("SKInternalErrorDomain") == true)
+
+        // Only this explicit action is permitted to request Apple's sign-in sheet.
+        await store.connectToAppStore()
+        XCTAssertEqual(refreshRequests, [false, true])
+        XCTAssertTrue(store.needsAppStoreConnection)
+        store.stop()
+        XCTAssertFalse(store.needsAppStoreConnection)
+        XCTAssertNil(store.message)
+    }
+
+    @MainActor
+    func testLogoutDuringAppleVerificationDiscardsResultAndConcurrentStart() async {
+        let commerce = await signedIn()
+        let started = expectation(description: "Apple verification started")
+        var continuation: CheckedContinuation<CommerceEnvironment, Error>?
+        var attempts = 0
+        MockURLProtocol.requestHandler = { _ in
+            XCTFail("The old account must not start a purchase context after logout")
+            throw URLError(.badServerResponse)
+        }
+        let store = AppleGiftStore(commerce: commerce) { _ in
+            attempts += 1
+            return try await withCheckedThrowingContinuation {
+                continuation = $0
+                started.fulfill()
+            }
+        }
+        let initial = Task { await store.start() }
+        await fulfillment(of: [started], timeout: 2)
+        await store.start()
+        XCTAssertEqual(attempts, 1)
+        store.stop()
+        continuation?.resume(returning: .sandbox)
+        await initial.value
+        XCTAssertNil(store.environment)
+        XCTAssertNil(store.message)
+        XCTAssertFalse(store.needsAppStoreConnection)
+        XCTAssertFalse(store.isLoading)
+    }
+
+    @MainActor
+    func testStartupMessagesDistinguishConnectionFromCatalogFailure() {
+        let error = NSError(domain: "SKInternalErrorDomain", code: 14)
+        XCTAssertTrue(AppleGiftStore.startupMessage(error, phase: .appVerification).contains("Connect to App Store"))
+        XCTAssertFalse(AppleGiftStore.startupMessage(error, phase: .products).contains("Connect to App Store"))
+        XCTAssertFalse(AppleGiftStore.startupMessage(error, phase: .configuration).contains("SKInternalErrorDomain"))
+    }
+
     private func body(_ request: URLRequest) throws -> Data {
         if let data = request.httpBody { return data }
         guard let stream = request.httpBodyStream else { return Data() }

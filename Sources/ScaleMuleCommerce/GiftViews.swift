@@ -33,12 +33,23 @@ public struct GiftPickerView: View {
                     Text("Send a gift to \(recipientName). It’s theirs to keep.").foregroundStyle(.secondary)
                 }
                 HStack {
-                    Label(balance.map { "\($0.availableMinor) credits" } ?? "Loading balance…", systemImage: "sparkle").font(.headline)
+                    Label(balance.map { "\($0.availableMinor) credits" } ?? "Your credits", systemImage: "sparkle").font(.headline)
                     Spacer()
                     Button("Get credits") { showWallet = true }.buttonStyle(.bordered)
                 }
                 if store.environment == .sandbox { Text("Sandbox · test credits only").font(.caption).foregroundStyle(.secondary) }
-                if loading { ProgressView("Loading gifts…").frame(maxWidth: .infinity, minHeight: 160) }
+                if store.needsAppStoreConnection {
+                    Text(store.message ?? "Connect to the App Store to load gifts.").foregroundStyle(.secondary)
+                    Button("Connect to App Store") { Task { await store.connectToAppStore(); await load() } }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(store.isLoading)
+                }
+                else if loading || store.isLoading { ProgressView("Loading gifts…").frame(maxWidth: .infinity, minHeight: 160) }
+                else if let error, products.isEmpty {
+                    Text("Gifts couldn’t load").font(.title2.bold())
+                    Text(error).foregroundStyle(.secondary)
+                    Button("Try again") { Task { await load() } }
+                }
                 else if products.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Gifts are on their way.").font(.title2.bold())
@@ -83,7 +94,7 @@ public struct GiftPickerView: View {
                 }
                 if let message = delivery.message { Text(message).font(.callout).accessibilityAddTraits(.updatesFrequently) }
                 if !delivery.pending.isEmpty { Button("Retry gift delivery") { Task { await delivery.retryPending(); await refreshBalance() } }.disabled(delivery.isSending) }
-                if let error { Text(error).foregroundStyle(.red) }
+                if let error, !products.isEmpty { Text(error).foregroundStyle(.red) }
                 Text("Gifts are digital items. Credits and gifts cannot be exchanged for cash.").font(.footnote).foregroundStyle(.secondary)
             }.padding(24)
         }
@@ -102,7 +113,7 @@ public struct GiftPickerView: View {
     private func load() async {
         loading = true; error = nil
         defer { loading = false }
-        if store.environment == nil && !store.isLoading { await store.start() }
+        if store.environment == nil && !store.isLoading && !store.needsAppStoreConnection { await store.start() }
         guard let environment = store.environment else { error = store.message; return }
         async let items = store.commerce.products(environment: environment)
         async let wallet = store.commerce.balance(environment: environment)
@@ -154,9 +165,19 @@ public struct CommerceWalletView: View {
                     }.padding(.vertical, 10)
                     Divider()
                 }
-                if store.offers.isEmpty && !store.isLoading { Text("Credit packs are not available yet.").foregroundStyle(.secondary) }
+                if store.offers.isEmpty && !store.isLoading && store.message == nil { Text("Credit packs are not available yet.").foregroundStyle(.secondary) }
                 if let message = store.message { Text(message).font(.callout) }
-                Button("Check pending purchases") { Task { await store.retryUnfinished(); await refresh() } }.disabled(store.isPurchasing)
+                if store.needsAppStoreConnection {
+                    Button("Connect to App Store") { Task { await store.connectToAppStore(); await refresh() } }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(store.isLoading || store.isPurchasing)
+                        .accessibilityIdentifier("commerceConnectAppStore")
+                } else if store.offers.isEmpty && !store.isLoading {
+                    Button("Reload credit packs") { Task { await store.start(); await refresh() } }
+                        .disabled(store.isPurchasing)
+                }
+                Button("Check pending purchases") { Task { await store.retryUnfinished(); await refresh() } }
+                    .disabled(store.isLoading || store.isPurchasing || store.environment == nil)
                 Text("Payments are handled by Apple. Credits do not expire and cannot be transferred or withdrawn as cash.").font(.footnote).foregroundStyle(.secondary)
                 Text("Your gifts").font(.title2.bold()).padding(.top, 8)
                 if inventory.isEmpty { Text("Gifts people send you will appear here.").foregroundStyle(.secondary) }
@@ -176,7 +197,7 @@ public struct CommerceWalletView: View {
             }.padding(24)
         }.navigationTitle("Credits & gifts")
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
-        .task { if store.environment == nil && !store.isLoading { await store.start() }; await refresh() }
+        .task { if store.environment == nil && !store.isLoading && !store.needsAppStoreConnection { await store.start() }; await refresh() }
         .onChange(of: store.fulfillmentRevision) { _ in Task { await refresh() } }
         .onChange(of: store.environment) { value in if value != nil { Task { await refresh() } } }
         .sheet(item: $viewedGift) { item in GiftPresentationView(gift: item.productSnapshot, title: "Your gift") }
