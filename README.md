@@ -613,6 +613,11 @@ await delivery.start(userID: signedInUserID)
 GiftPickerView(store: purchases, delivery: delivery,
     recipientID: authorUserID, recipientName: authorDisplayName,
     contextType: "social_post", contextID: postID)
+// Keep a catalog entry visible even on the user's own posts and from Settings.
+// The host supplies real, authorized public identities and excludes self/blocks.
+GiftPickerView(store: purchases, delivery: delivery, loadRecipients: {
+    GiftRecipient.eligible(try await loadSocialRecipients(), currentUserID: signedInUserID)
+})
 CommerceWalletView(store: purchases)
 
 // Foreground recovery:

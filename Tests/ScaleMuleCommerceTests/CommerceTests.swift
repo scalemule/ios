@@ -142,6 +142,21 @@ final class CommerceTests: XCTestCase {
         XCTAssertFalse(AppleGiftStore.startupMessage(error, phase: .configuration).contains("SKInternalErrorDomain"))
     }
 
+    func testGiftRecipientChoicesExcludeSelfBlockedPeopleAndDuplicateIdentities() {
+        let people = [
+            GiftRecipient(id: "ME", name: "Me"),
+            GiftRecipient(id: "blocked", name: "Blocked"),
+            GiftRecipient(id: "friend", name: "Мая 🌸"),
+            GiftRecipient(id: "FRIEND", name: "Duplicate"),
+            GiftRecipient(id: "other", name: "東京 👋"),
+            GiftRecipient(id: "", name: "Missing ID")
+        ]
+        let choices = GiftRecipient.eligible(people, currentUserID: "me", blockedIDs: ["BLOCKED"])
+        XCTAssertEqual(choices.map(\.id), ["friend", "other"])
+        XCTAssertEqual(choices.map(\.name), ["Мая 🌸", "東京 👋"])
+        XCTAssertTrue(GiftRecipient.eligible([people[0]], currentUserID: "me").isEmpty)
+    }
+
     private func body(_ request: URLRequest) throws -> Data {
         if let data = request.httpBody { return data }
         guard let stream = request.httpBodyStream else { return Data() }
