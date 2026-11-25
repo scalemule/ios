@@ -122,7 +122,7 @@ final class ConnectionsTests: XCTestCase {
                 return TestFixtures.envelopedResponse(json: "[\(self.requestJSON(self.r1, from: self.them, note: "it's me & a <friend>"))]")
             }
             if path == "/connections" {
-                return TestFixtures.envelopedResponse(json: "{\"connections\": [{\"user_id\": \"\(self.them)\", \"connected_at\": \"2026-11-24T10:00:00Z\"}], \"has_more\": true}")
+                return TestFixtures.envelopedResponse(json: "{\"connections\": [{\"user_id\": \"\(self.them)\", \"connected_at\": \"2026-11-24T10:00:00Z\"}], \"has_more\": true, \"next_before\": \"cursor-1\"}")
             }
             if path.hasSuffix("/accept") { return TestFixtures.envelopedResponse(json: "{\"id\": \"\(self.r1)\", \"status\": \"accepted\"}") }
             return TestFixtures.envelopedResponse(json: "null")
@@ -140,6 +140,7 @@ final class ConnectionsTests: XCTestCase {
         let page = assertApiSuccess(await connections.connections())
         XCTAssertEqual(page?.connections.map(\.userId), [them])
         XCTAssertEqual(page?.hasMore, true)
+        XCTAssertEqual(page?.nextBefore, "cursor-1")
         _ = assertApiSuccess(await connections.remove(userId: them))
         XCTAssertEqual(seen, [
             "GET /contact-requests/inbox", "GET /contact-requests/sent",

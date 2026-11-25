@@ -119,16 +119,20 @@ public struct Connection: Sendable, Equatable, Identifiable, Decodable {
 public struct ConnectionsPage: Sendable, Equatable, Decodable {
     public let connections: [Connection]
     public let hasMore: Bool
+    /// Pass as `before` for the next page; nil on the last one.
+    public let nextBefore: String?
 
     private enum CodingKeys: String, CodingKey {
         case connections
         case hasMore = "has_more"
+        case nextBefore = "next_before"
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         connections = try c.decodeIfPresent([Connection].self, forKey: .connections) ?? []
         hasMore = try c.decodeIfPresent(Bool.self, forKey: .hasMore) ?? false
+        nextBefore = try c.decodeIfPresent(String.self, forKey: .nextBefore)
     }
 }
 

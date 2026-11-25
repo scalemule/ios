@@ -368,4 +368,17 @@ final class ChatModelsTests: XCTestCase {
         XCTAssertTrue(model.cannotMessage)
         XCTAssertFalse(model.needsConnection)
     }
+
+    func testAnEarlierConversationStaysReadableWhenTheConnectionIsGone() async {
+        openAnswer = TestFixtures.mockResponse(statusCode: 403, json: #"{"success":false,"error":{"code":"CONNECTION_REQUIRED","message":"Connect with this person before sending a message"}}"#)
+        listJSON = "[\(row(c2, with: "019b0000-0000-7000-8000-0000000000cc")), \(row(c1, with: them))]"
+        pageJSON = "{\"messages\": [\(messageJSON(id: "m1", from: them, "from before"))], \"has_more\": false}"
+        let service = chat()
+        let model = thread(service)
+        await model.start()
+        XCTAssertTrue(model.needsConnection, "a new message needs a connection")
+        XCTAssertTrue(model.hasLoaded, "found among my conversations, since Chat will not open it")
+        XCTAssertEqual(model.messages.map(\.content), ["from before"])
+        XCTAssertNil(model.errorMessage)
+    }
 }

@@ -117,6 +117,10 @@ public final class ChatThreadModel: ObservableObject {
 
     private func findConversation() async -> Bool {
         if conversation != nil { return true }
+        if let known = inbox?.conversation(with: peerUserId) {
+            conversation = known
+            return true
+        }
         switch await chat.directConversation(with: peerUserId) {
         case .success(let found):
             conversation = found
@@ -125,6 +129,13 @@ public final class ChatThreadModel: ObservableObject {
             if Self.needsConnection(error) {
                 needsConnection = true
                 errorMessage = nil
+                // Chat opens nothing for two people who are not connected,
+                // but what they said before is still theirs to read.
+                if case .success(let list) = await chat.conversations(perPage: 100, type: "direct"),
+                   let earlier = list.first(where: { ChatID.same($0.counterpartyUserId, peerUserId) }) {
+                    conversation = earlier
+                    return true
+                }
             } else {
                 errorMessage = error.userFacingMessage
             }
