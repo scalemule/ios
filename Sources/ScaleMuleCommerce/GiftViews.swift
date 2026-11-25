@@ -7,8 +7,8 @@ import ScaleMuleCore
 public struct GiftPickerView: View {
     @ObservedObject private var store: AppleGiftStore
     @ObservedObject private var delivery: GiftDeliveryStore
-    private let recipientID: String
-    private let recipientName: String
+    @State private var recipient: GiftRecipient?
+    private let loadRecipients: (@MainActor () async throws -> [GiftRecipient])?
     private let contextType: String?
     private let contextID: String?
     @State private var products: [GiftProduct] = []
@@ -19,18 +19,38 @@ public struct GiftPickerView: View {
     @State private var showWallet = false
     @State private var showDelivery = false
     @State private var hasMore = false
+    @State private var showRecipients = false
+    @State private var productCursor: String?
 
     public init(store: AppleGiftStore, delivery: GiftDeliveryStore, recipientID: String, recipientName: String,
                 contextType: String? = nil, contextID: String? = nil) {
-        self.store=store;self.delivery=delivery;self.recipientID=recipientID;self.recipientName=recipientName
+        self.store=store;self.delivery=delivery
+        self._recipient = State(initialValue: GiftRecipient(id: recipientID, name: recipientName))
+        self.loadRecipients = nil
         self.contextType=contextType;self.contextID=contextID
+    }
+    /// Opens the catalog before a recipient is chosen. The host supplies real,
+    /// authorized recipients from its social graph; browsing never spends credits.
+    public init(store: AppleGiftStore, delivery: GiftDeliveryStore,
+                loadRecipients: @escaping @MainActor () async throws -> [GiftRecipient]) {
+        self.store = store; self.delivery = delivery
+        self._recipient = State(initialValue: nil)
+        self.loadRecipients = loadRecipients
+        self.contextType = nil; self.contextID = nil
     }
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Make their moment.").font(.largeTitle.bold())
-                    Text("Send a gift to \(recipientName). It’s theirs to keep.").foregroundStyle(.secondary)
+                    Text(recipient.map { "Send a gift to \($0.name). It’s theirs to keep." }
+                         ?? "Pick a gift, choose someone, and make their day.").foregroundStyle(.secondary)
+                    if loadRecipients != nil {
+                        Button { showRecipients = true } label: {
+                            Label(recipient.map { "To: \($0.name) · Change" } ?? "Choose who to send it to", systemImage: "person.crop.circle")
+                        }.buttonStyle(.bordered).disabled(delivery.isSending)
+                            .accessibilityIdentifier("giftChooseRecipient")
+                    }
                 }
                 HStack {
                     Label(balance.map { "\($0.availableMinor) credits" } ?? "Your credits", systemImage: "sparkle").font(.headline)
@@ -75,40 +95,61 @@ public struct GiftPickerView: View {
                     }
                 }
                 if hasMore { Button("More gifts") { Task { await moreProducts() } } }
-                if let product = products.first(where: { $0.id == selected }) {
-                    Text(product.description).foregroundStyle(.secondary)
-                    Button {
-                        guard let environment = store.environment else { return }
-                        Task {
-                            await delivery.send(product: product, recipientID: recipientID, environment: environment, contextType: contextType, contextID: contextID)
-                            await refreshBalance()
-                        }
-                    } label: {
-                        HStack {
-                            if delivery.isSending { ProgressView() }
-                            Text(delivery.isSending ? "Sending…" : "Send \(product.displayName) · \(product.unitPriceMinor) credits").fontWeight(.semibold)
-                        }.frame(maxWidth: .infinity).padding(.vertical, 10)
-                    }.buttonStyle(.borderedProminent)
-                    .disabled(delivery.isSending || store.environment == nil || (balance?.availableMinor ?? 0) < product.unitPriceMinor)
-                    if (balance?.availableMinor ?? 0) < product.unitPriceMinor { Text("Get more credits to send this gift.").font(.footnote).foregroundStyle(.secondary) }
-                }
                 if let message = delivery.message { Text(message).font(.callout).accessibilityAddTraits(.updatesFrequently) }
                 if !delivery.pending.isEmpty { Button("Retry gift delivery") { Task { await delivery.retryPending(); await refreshBalance() } }.disabled(delivery.isSending) }
                 if let error, !products.isEmpty { Text(error).foregroundStyle(.red) }
                 Text("Gifts are digital items. Credits and gifts cannot be exchanged for cash.").font(.footnote).foregroundStyle(.secondary)
             }.padding(24)
         }
-        .navigationTitle("Send a gift")
+        .navigationTitle(loadRecipients == nil ? "Send a gift" : "Gift shop")
+        .safeAreaInset(edge: .bottom) { sendControls }
         .task { await load() }
         .onChange(of: store.fulfillmentRevision) { _ in Task { await refreshBalance() } }
         .onChange(of: store.environment) { value in if value != nil { Task { await load() } } }
         .onChange(of: delivery.lastDelivered?.id) { _ in
-            if delivery.lastDelivered?.recipientID == recipientID { showDelivery = true }
+            if let recipient, delivery.lastDelivered?.recipientID == recipient.id { showDelivery = true }
         }
         .sheet(isPresented: $showDelivery) {
-            if let gift = delivery.lastDelivered { GiftPresentationView(gift: gift.productSnapshot, title: "Gift sent to \(recipientName)") }
+            if let gift = delivery.lastDelivered { GiftPresentationView(gift: gift.productSnapshot, title: "Gift sent to \(recipient?.name ?? "recipient")") }
         }
         .sheet(isPresented: $showWallet) { NavigationStack { CommerceWalletView(store: store) } }
+        .sheet(isPresented: $showRecipients) {
+            if let loadRecipients {
+                GiftRecipientPicker(load: loadRecipients) { recipient = $0 }
+            }
+        }
+    }
+    @ViewBuilder private var sendControls: some View {
+        if let product = products.first(where: { $0.id == selected }) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(product.description).font(.subheadline).foregroundStyle(.secondary)
+                if let recipient {
+                    Button {
+                        guard let environment = store.environment else { return }
+                        Task {
+                            await delivery.send(product: product, recipientID: recipient.id, environment: environment,
+                                                contextType: contextType, contextID: contextID)
+                            await refreshBalance()
+                        }
+                    } label: {
+                        HStack {
+                            if delivery.isSending { ProgressView() }
+                            Text(delivery.isSending ? "Sending…" : "Send \(product.displayName) to \(recipient.name) · \(product.unitPriceMinor) credits")
+                                .fontWeight(.semibold)
+                        }.frame(maxWidth: .infinity).padding(.vertical, 10)
+                    }.buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("giftConfirmSend")
+                        .disabled(delivery.isSending || store.environment == nil || (balance?.availableMinor ?? 0) < product.unitPriceMinor)
+                } else {
+                    Button("Choose recipient for \(product.displayName)") { showRecipients = true }
+                        .buttonStyle(.borderedProminent).frame(maxWidth: .infinity)
+                }
+                if (balance?.availableMinor ?? 0) < product.unitPriceMinor {
+                    Button("Get more credits") { showWallet = true }.font(.footnote)
+                }
+                if let message = delivery.message { Text(message).font(.footnote) }
+            }.padding(16).frame(maxWidth: .infinity).background(.regularMaterial)
+        }
     }
     private func load() async {
         loading = true; error = nil
@@ -117,15 +158,18 @@ public struct GiftPickerView: View {
         guard let environment = store.environment else { error = store.message; return }
         async let items = store.commerce.products(environment: environment)
         async let wallet = store.commerce.balance(environment: environment)
-        switch await items { case .success(let value): products = value; hasMore = value.count == 30; case .failure(let failure): error = failure.message }
+        switch await items { case .success(let value): productCursor = value.last?.id; products = ordered(value); hasMore = value.count == 30; case .failure(let failure): error = failure.message }
         if case .success(let value) = await wallet { balance = value }
     }
     private func moreProducts() async {
-        guard let environment = store.environment, let last = products.last else { return }
-        switch await store.commerce.products(environment: environment, before: last.id) {
-        case .success(let next): products += next; hasMore = next.count == 30
+        guard let environment = store.environment, let cursor = productCursor else { return }
+        switch await store.commerce.products(environment: environment, before: cursor) {
+        case .success(let next): productCursor = next.last?.id; products = ordered(products + next); hasMore = next.count == 30
         case .failure(let failure): error = failure.message
         }
+    }
+    private func ordered(_ items: [GiftProduct]) -> [GiftProduct] {
+        items.sorted { $0.unitPriceMinor == $1.unitPriceMinor ? $0.id < $1.id : $0.unitPriceMinor < $1.unitPriceMinor }
     }
     private func refreshBalance() async {
         guard let environment = store.environment else { return }
