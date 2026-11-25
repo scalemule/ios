@@ -61,7 +61,7 @@ public struct ChatConversation: Sendable, Decodable, Identifiable, Equatable {
         participantCount = try c.decodeIfPresent(Int.self, forKey: .participantCount) ?? 0
         lastMessageAt = try c.decodeIfPresent(String.self, forKey: .lastMessageAt)
         unreadCount = try c.decodeIfPresent(Int.self, forKey: .unreadCount) ?? 0
-        lastMessagePreview = try c.decodeIfPresent(String.self, forKey: .lastMessagePreview).map(ChatText.unescape)
+        lastMessagePreview = try c.decodeIfPresent(String.self, forKey: .lastMessagePreview)
         lastMessageSenderId = try c.decodeIfPresent(String.self, forKey: .lastMessageSenderId)
         lastMessageType = try c.decodeIfPresent(String.self, forKey: .lastMessageType)
         counterpartyUserId = try c.decodeIfPresent(String.self, forKey: .counterpartyUserId)
@@ -129,7 +129,7 @@ public struct ChatMessage: Sendable, Decodable, Identifiable, Equatable {
     public enum Delivery: Sendable, Equatable { case sent, sending, failed }
 
     public var id: String
-    /// The text people see (the server keeps it escaped; this is unescaped).
+    /// The text, exactly as it was typed (Chat stores plain text as it is).
     public var content: String
     /// "text", "image", "file", "system".
     public let messageType: String
@@ -180,9 +180,9 @@ public struct ChatMessage: Sendable, Decodable, Identifiable, Equatable {
         let plain = try c.decodeIfPresent(String.self, forKey: .plainText)
         // A formatted message (written on the web) is shown as its plain text.
         if format == "html", let plain, !plain.isEmpty {
-            content = ChatText.unescape(plain)
+            content = plain
         } else {
-            content = ChatText.unescape(raw)
+            content = raw
         }
         messageType = try c.decodeIfPresent(String.self, forKey: .messageType) ?? "text"
         senderId = try c.decodeIfPresent(String.self, forKey: .senderId) ?? ""
@@ -260,21 +260,6 @@ enum ChatDate {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter.string(from: date)
-    }
-}
-
-/// Chat keeps people's text HTML-escaped (`it&#x27;s`); people see the text.
-enum ChatText {
-    static func unescape(_ value: String) -> String {
-        guard value.contains("&") else { return value }
-        return value
-            .replacingOccurrences(of: "&lt;", with: "<")
-            .replacingOccurrences(of: "&gt;", with: ">")
-            .replacingOccurrences(of: "&quot;", with: "\"")
-            .replacingOccurrences(of: "&#x27;", with: "'")
-            .replacingOccurrences(of: "&#x2F;", with: "/")
-            .replacingOccurrences(of: "&#39;", with: "'")
-            .replacingOccurrences(of: "&amp;", with: "&")
     }
 }
 

@@ -105,6 +105,7 @@ public final class ChatInboxModel: ObservableObject {
         row.lastMessageAt = message.createdAt
         row.lastMessageSenderId = message.senderId
         row.lastMessageType = message.messageType
+        row.unreadCount = 0
         all.removeAll { $0.id == conversation.id }
         all.insert(row, at: 0)
         publish()
@@ -152,6 +153,14 @@ public final class ChatInboxModel: ObservableObject {
             guard row.lastMessageAt != nil else { return false }
             if let other = row.counterpartyUserId, blocked.contains(ChatID.key(other)) { return false }
             return true
+        }
+        .map { row -> ChatConversation in
+            // Chat counts my own message as unread until I mark the
+            // conversation read; someone who wrote last has read it.
+            guard row.unreadCount != 0, ChatID.same(row.lastMessageSenderId, myUserId) else { return row }
+            var seen = row
+            seen.unreadCount = 0
+            return seen
         }
         if shown != conversations { conversations = shown }
         let count = shown.reduce(0) { $0 + ($1.isMuted ? 0 : max(0, $1.unreadCount)) }

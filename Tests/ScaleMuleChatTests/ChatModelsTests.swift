@@ -153,6 +153,7 @@ final class ChatModelsTests: XCTestCase {
         XCTAssertTrue(seen.contains("POST /conversations"), "the conversation is made the first time")
         XCTAssertTrue(model.messages.isEmpty)
         XCTAssertFalse(seen.contains("POST /conversations/\(c1)/read"), "nothing to mark read in an empty conversation")
+        listJSON = "[\(row(c1, with: me, unread: 1))]"
 
         let gate = DispatchSemaphore(value: 0)
         sendGate = gate
@@ -167,6 +168,11 @@ final class ChatModelsTests: XCTestCase {
         XCTAssertEqual(model.messages[0].delivery, .sent)
         XCTAssertTrue(model.messages[0].id.hasPrefix("sent-"))
         XCTAssertEqual(inbox.conversations.first?.lastMessagePreview, "hello there", "my own message shows in the list")
+        XCTAssertTrue(seen.contains("POST /conversations/\(c1)/read"), "Chat counts my own message as unread until the conversation is marked read")
+        // The list as Chat gives it before that mark lands: my own message "unread".
+        await inbox.load()
+        XCTAssertEqual(inbox.conversations.first?.unreadCount, 0)
+        XCTAssertEqual(inbox.unread, 0, "what I wrote last is never unread for me")
 
         let empty = await model.send("   \n ")
         XCTAssertFalse(empty)
@@ -214,12 +220,12 @@ final class ChatModelsTests: XCTestCase {
         XCTAssertTrue(model.otherIsTyping)
         model.handle(liveEvent(channel: channel, name: "user_typing", ["user_id": me]))
 
-        let incoming: [String: Any] = ["id": "m2", "sender_id": them, "content": "it&#x27;s me", "message_type": "text", "created_at": "2026-11-24T10:01:00Z"]
+        let incoming: [String: Any] = ["id": "m2", "sender_id": them, "content": "it's me &amp; you", "message_type": "text", "created_at": "2026-11-24T10:01:00Z"]
         model.handle(liveEvent(channel: channel, name: "new_message", incoming))
         // The same message also comes on my own channel.
         model.handle(liveEvent(channel: "private:app:me", name: "new_message", incoming.merging(["conversation_id": c1]) { $1 }))
         XCTAssertEqual(model.messages.map(\.id), ["m1", "m2"])
-        XCTAssertEqual(model.messages[1].content, "it's me")
+        XCTAssertEqual(model.messages[1].content, "it's me &amp; you", "text is shown as typed")
         XCTAssertFalse(model.otherIsTyping, "a message ends typing")
         await eventually("marked read") { self.seen.contains("POST /conversations/\(self.c1)/read") }
 
@@ -291,5 +297,36 @@ final class ChatModelsTests: XCTestCase {
         await model.catchUp()
         XCTAssertEqual(model.messages.map(\.id), ["m1", "m2", "m3"])
         XCTAssertTrue(seen.contains { $0.contains("after=m1") })
+    }
+
+    func testDeletedMessagesAreLeftOutAndPagingGoesPastThem() async {
+        func deleted(_ id: String) -> String {
+            messageJSON(id: id, from: them, "Message deleted").replacingOccurrences(of: "\"is_deleted\": false", with: "\"is_deleted\": true")
+        }
+        pageJSON = "{\"messages\": [\(messageJSON(id: "m4", from: them, "kept")), \(deleted("m3"))], \"has_more\": true}"
+        let service = chat()
+        let model = thread(service)
+        await model.start()
+        XCTAssertEqual(model.messages.map(\.id), ["m4"], "Chat lists a deleted message as a placeholder; the screen leaves it out")
+
+        // A whole page of deleted messages still moves the cursor on.
+        pageJSON = "{\"messages\": [\(deleted("m2"))], \"has_more\": true}"
+        seen = []
+        await model.loadOlder()
+        XCTAssertTrue(seen.contains { $0.contains("before=m3") }, "paging starts from the oldest message given, deleted or not")
+        XCTAssertEqual(model.messages.map(\.id), ["m4"])
+        pageJSON = "{\"messages\": [\(messageJSON(id: "m1", from: me, "first"))], \"has_more\": false}"
+        seen = []
+        await model.loadOlder()
+        XCTAssertTrue(seen.contains { $0.contains("before=m2") })
+        XCTAssertEqual(model.messages.map(\.id), ["m1", "m4"])
+        XCTAssertFalse(model.hasOlder)
+
+        // Away for a while: one message came and was deleted again, one stayed.
+        pageJSON = "{\"messages\": [\(deleted("m5")), \(messageJSON(id: "m6", from: them, "still here"))], \"has_more\": false}"
+        seen = []
+        await model.catchUp()
+        XCTAssertTrue(seen.contains { $0.contains("after=m4") })
+        XCTAssertEqual(model.messages.map(\.id), ["m1", "m4", "m6"])
     }
 }

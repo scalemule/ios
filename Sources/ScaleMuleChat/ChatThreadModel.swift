@@ -41,6 +41,10 @@ public final class ChatThreadModel: ObservableObject {
     private var events: RealtimeSubscription?
     private var reconnects: AnyCancellable?
     private var isOnScreen = false
+    /// The oldest and newest message ids the server has given, deleted ones
+    /// included: paging continues from these.
+    private var oldestId: String?
+    private var newestId: String?
     private var typingOff: Task<Void, Never>?
     private var lastTypingSent: Date?
     private var sentTyping = false
@@ -79,6 +83,8 @@ public final class ChatThreadModel: ObservableObject {
         switch await chat.messages(conversationId: id) {
         case .success(let page):
             merge(page.messages.reversed())
+            oldestId = page.messages.last?.id
+            newestId = page.messages.first?.id
             hasOlder = page.hasMore
             hasLoaded = true
             errorMessage = nil
@@ -129,10 +135,12 @@ public final class ChatThreadModel: ObservableObject {
             .sink { [weak self] _ in Task { await self?.catchUp() } }
     }
 
+    /// Chat counts every message after my last read as unread, my own too,
+    /// so this follows each message that arrives and each one I send.
     private func markRead() async {
         guard isOnScreen, let id = conversation?.id else { return }
         inbox?.noteRead(conversationId: id)
-        guard messages.contains(where: { !isMine($0) }) else { return }
+        guard !messages.isEmpty else { return }
         _ = await chat.markRead(conversationId: id)
     }
 
@@ -152,15 +160,15 @@ public final class ChatThreadModel: ObservableObject {
     }
 
     public func loadOlder() async {
-        guard hasOlder, !isLoadingOlder, let id = conversation?.id,
-              let oldest = messages.first(where: { $0.delivery == .sent })?.id else { return }
+        guard hasOlder, !isLoadingOlder, let id = conversation?.id, let oldest = oldestId else { return }
         isLoadingOlder = true
         defer { isLoadingOlder = false }
         switch await chat.messages(conversationId: id, before: oldest) {
         case .success(let page):
             let known = Set(messages.map(\.id))
-            messages.insert(contentsOf: page.messages.reversed().filter { !known.contains($0.id) }, at: 0)
-            hasOlder = page.hasMore
+            messages.insert(contentsOf: page.messages.reversed().filter { !known.contains($0.id) && !$0.isDeleted }, at: 0)
+            if let last = page.messages.last?.id { oldestId = last }
+            hasOlder = page.hasMore && !page.messages.isEmpty
         case .failure(let error):
             errorMessage = error.userFacingMessage
         }
@@ -169,16 +177,21 @@ public final class ChatThreadModel: ObservableObject {
     /// What arrived while the connection was down.
     func catchUp() async {
         guard hasLoaded, let id = conversation?.id else { return }
-        guard let newest = messages.last(where: { $0.delivery == .sent })?.id else {
-            if case .success(let page) = await chat.messages(conversationId: id) { merge(page.messages.reversed()) }
+        guard var cursor = newestId else {
+            if case .success(let page) = await chat.messages(conversationId: id) {
+                merge(page.messages.reversed())
+                oldestId = oldestId ?? page.messages.last?.id
+                newestId = page.messages.first?.id
+            }
+            await markRead()
             return
         }
-        var cursor = newest
         // `after` pages run oldest first; a long absence takes a few pages.
         for _ in 0..<5 {
             guard case .success(let page) = await chat.messages(conversationId: id, limit: 100, after: cursor), let last = page.messages.last else { break }
             merge(page.messages)
             cursor = last.id
+            newestId = last.id
             if !page.hasMore { break }
         }
         await markRead()
@@ -190,6 +203,11 @@ public final class ChatThreadModel: ObservableObject {
     }
 
     private func add(_ message: ChatMessage) {
+        // Chat keeps a deleted message as a placeholder; here it is gone.
+        if message.isDeleted {
+            messages.removeAll { $0.id == message.id }
+            return
+        }
         if let index = messages.firstIndex(where: { $0.id == message.id }) {
             var kept = message
             kept.delivery = .sent
@@ -257,7 +275,10 @@ public final class ChatThreadModel: ObservableObject {
             hasLoaded = true
             cannotMessage = false
             errorMessage = nil
+            newestId = sent.id
+            if oldestId == nil { oldestId = sent.id }
             inbox?.noteSent(sent, in: conversation)
+            await markRead()
             return true
         case .failure(let error):
             fail(localId)
@@ -360,6 +381,7 @@ public final class ChatThreadModel: ObservableObject {
             guard let message = event.decode(ChatMessage.self) else { return }
             let isNew = !messages.contains { $0.id == message.id }
             add(message)
+            newestId = message.id
             if isNew, !isMine(message) {
                 setOtherTyping(false)
                 Task { await markRead() }
@@ -371,7 +393,7 @@ public final class ChatThreadModel: ObservableObject {
             guard let messageId = fields.messageId ?? fields.id,
                   let index = messages.firstIndex(where: { $0.id == messageId }),
                   let text = fields.newPlainText ?? fields.plainText ?? fields.newContent ?? fields.content else { return }
-            messages[index].content = ChatText.unescape(text)
+            messages[index].content = text
             messages[index].isEdited = true
         case "messages_read":
             guard !ChatID.same(fields.userId, myUserId) else { return }

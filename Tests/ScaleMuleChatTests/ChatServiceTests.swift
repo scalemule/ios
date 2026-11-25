@@ -45,13 +45,13 @@ final class ChatServiceTests: XCTestCase {
             XCTAssertEqual(self.query(request), ["page": "1", "per_page": "100", "conversation_type": "direct"])
             return TestFixtures.envelopedResponse(json: """
             [{"id": "\(self.conversationId)", "conversation_type": "direct", "name": null, "participant_count": 2,
-              "last_message_at": "2026-11-24T10:05:00.250Z", "unread_count": 3, "last_message_preview": "it&#x27;s on 🎉",
+              "last_message_at": "2026-11-24T10:05:00.250Z", "unread_count": 3, "last_message_preview": "it's on &amp; on 🎉",
               "last_message_sender_id": "\(self.them)", "last_message_type": "text", "counterparty_user_id": "\(self.them)",
               "is_muted": false, "created_at": "2026-11-24T10:00:00Z"}]
             """)
         }
         let list = assertApiSuccess(await chat.conversations(perPage: 400, type: "direct"))
-        XCTAssertEqual(list?.first?.lastMessagePreview, "it's on 🎉")
+        XCTAssertEqual(list?.first?.lastMessagePreview, "it's on &amp; on 🎉", "Chat stores text as typed: nothing is unescaped")
         XCTAssertEqual(list?.first?.unreadCount, 3)
         XCTAssertEqual(list?.first?.counterpartyUserId, them)
         XCTAssertNotNil(list?.first?.lastMessageDate)
@@ -64,7 +64,7 @@ final class ChatServiceTests: XCTestCase {
             XCTAssertEqual(self.query(request), ["limit": "100", "before": "m9"])
             return TestFixtures.envelopedResponse(json: """
             {"messages": [
-              \(self.messageJSON(id: "m2", from: self.them, "5 &lt; 6 &amp; so on")),
+              \(self.messageJSON(id: "m2", from: self.them, "5 < 6 & literally &lt;b&gt;")),
               {"id": "m1", "content": "<p>Hello <b>you</b></p>", "content_format": "html", "plain_text": "Hello you", "message_type": "text",
                "sender_id": "\(self.me)", "is_deleted": false, "is_edited": true, "created_at": "2026-11-24T09:59:00Z",
                "attachments": [{"file_id": "f1", "file_name": "a.jpg", "file_size": 10, "mime_type": "image/jpeg", "presigned_url": "https://x/a.jpg"}],
@@ -74,7 +74,7 @@ final class ChatServiceTests: XCTestCase {
         }
         let page = assertApiSuccess(await chat.messages(conversationId: conversationId, limit: 500, before: "m9"))
         XCTAssertEqual(page?.messages.map(\.id), ["m2", "m1"])
-        XCTAssertEqual(page?.messages[0].content, "5 < 6 & so on")
+        XCTAssertEqual(page?.messages[0].content, "5 < 6 & literally &lt;b&gt;", "what was typed is what is shown")
         XCTAssertEqual(page?.messages[1].content, "Hello you", "a formatted message shows as its plain text")
         XCTAssertEqual(page?.messages[1].attachments.first?.isImage, true)
         XCTAssertEqual(page?.messages[1].reactions.first?.emoji, "👍")
