@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import StoreKit
+import OSLog
 import ScaleMuleCore
 
 public struct StoreCreditOffer: Identifiable, Sendable {
@@ -24,27 +25,58 @@ public final class AppleGiftStore: ObservableObject {
     @Published public private(set) var message: String?
     @Published public private(set) var fulfillmentRevision = 0
     @Published public private(set) var enabled = false
+    @Published public private(set) var needsAppStoreConnection = false
     public let commerce: CommerceService
     private var context: ApplePurchaseContext?
     private var generation = UUID()
     private var listener: Task<Void, Never>?
     private var processing: Set<UInt64> = []
 
-    public init(commerce: CommerceService) { self.commerce = commerce }
+    private let appEnvironment: (Bool) async throws -> CommerceEnvironment
+    private let log = Logger(subsystem: "com.scalemule.sdk", category: "Commerce")
+
+    public init(commerce: CommerceService) {
+        self.commerce = commerce
+        self.appEnvironment = Self.verifiedAppEnvironment
+    }
+
+    // Internal dependency injection keeps recovery tests independent of an Apple account.
+    init(commerce: CommerceService, appEnvironment: @escaping (Bool) async throws -> CommerceEnvironment) {
+        self.commerce = commerce
+        self.appEnvironment = appEnvironment
+    }
     deinit { listener?.cancel() }
 
     public func start() async {
+        await load(refreshAppTransaction: false)
+    }
+
+    /// Call only from a user action: Apple may present its authentication sheet.
+    public func connectToAppStore() async {
+        await load(refreshAppTransaction: true)
+    }
+
+    private static func verifiedAppEnvironment(refresh: Bool) async throws -> CommerceEnvironment {
+        let result = try await (refresh ? AppTransaction.refresh() : AppTransaction.shared)
+        guard case .verified(let app) = result, app.bundleID == Bundle.main.bundleIdentifier else {
+            throw CommerceError.unverified
+        }
+        if app.environment == .production { return .production }
+        if app.environment == .sandbox { return .sandbox }
+        throw CommerceError.localStoreUnsupported
+    }
+
+    private func load(refreshAppTransaction: Bool) async {
+        guard !isLoading, !isPurchasing else { return }
         stop()
         let run = generation
         isLoading = true
         defer { if generation == run { isLoading = false } }
+        var phase = StartupPhase.appVerification
         do {
-            let appResult = try await AppTransaction.shared
-            guard case .verified(let app) = appResult else { throw CommerceError.unverified }
-            let environment: CommerceEnvironment
-            if app.environment == .production { environment = .production }
-            else if app.environment == .sandbox { environment = .sandbox }
-            else { throw CommerceError.localStoreUnsupported }
+            let environment = try await appEnvironment(refreshAppTransaction)
+            guard generation == run, !Task.isCancelled else { return }
+            phase = .configuration
             let response = await commerce.purchaseContext(environment: environment)
             guard generation == run, !Task.isCancelled else { return }
             switch response {
@@ -60,6 +92,7 @@ public final class AppleGiftStore: ObservableObject {
                         await self.fulfill(result, generation: run)
                     }
                 }
+                phase = .products
                 let products = try await StoreKit.Product.products(for: context.products.map(\.productID))
                 guard generation == run, !Task.isCancelled else { return }
                 let mapped = Dictionary(uniqueKeysWithValues: products.filter { $0.type == .consumable }.map { ($0.id, $0) })
@@ -68,8 +101,34 @@ public final class AppleGiftStore: ObservableObject {
                 await retryUnfinished()
             }
         } catch {
-            guard generation == run else { return }
-            message = error.localizedDescription
+            guard generation == run, !Task.isCancelled else { return }
+            needsAppStoreConnection = phase == .appVerification && (error as? CommerceError) != .localStoreUnsupported
+            message = Self.startupMessage(error, phase: phase)
+            record(error, operation: phase.rawValue)
+        }
+    }
+
+    enum StartupPhase: String { case appVerification, configuration, products }
+
+    static func startupMessage(_ error: Error, phase: StartupPhase) -> String {
+        if let error = error as? CommerceError { return error.localizedDescription }
+        switch phase {
+        case .appVerification:
+            return "Apple couldn’t connect this app to the App Store. Tap Connect to App Store to sign in or try again."
+        case .configuration:
+            return "We couldn’t load the purchase settings. Please try again."
+        case .products:
+            return "Apple couldn’t load the credit packs. Please try again."
+        }
+    }
+
+    // Record codes only, never credentials, receipts, or NSError userInfo contents.
+    private func record(_ error: Error, operation: String) {
+        var current = error as NSError
+        for _ in 0..<3 {
+            log.error("Commerce request failed operation=\(operation, privacy: .public) domain=\(current.domain, privacy: .public) code=\(current.code)")
+            guard let underlying = current.userInfo[NSUnderlyingErrorKey] as? NSError else { break }
+            current = underlying
         }
     }
 
@@ -77,6 +136,7 @@ public final class AppleGiftStore: ObservableObject {
         generation = UUID(); listener?.cancel(); listener = nil
         context = nil; environment = nil; offers = []; pendingTransactions = []; processing = []
         isLoading = false; isPurchasing = false; message = nil; enabled = false
+        needsAppStoreConnection = false
     }
 
     public func purchase(_ offer: StoreCreditOffer) async {
@@ -94,7 +154,11 @@ public final class AppleGiftStore: ObservableObject {
             case .userCancelled: break
             @unknown default: message = "The purchase is still being processed."
             }
-        } catch { if generation == run { message = error.localizedDescription } }
+        } catch {
+            guard generation == run else { return }
+            message = "Apple couldn’t complete the purchase. Check pending purchases before trying again."
+            record(error, operation: "purchase")
+        }
     }
 
     public func retryUnfinished() async {
@@ -138,11 +202,11 @@ public final class AppleGiftStore: ObservableObject {
     }
 }
 
-private enum CommerceError: LocalizedError {
+private enum CommerceError: LocalizedError, Equatable {
     case unverified, configuration, localStoreUnsupported
     var errorDescription: String? {
         switch self {
-        case .unverified: return "Apple could not verify this app's purchase environment. Please try again."
+        case .unverified: return "Apple could not verify this app. Tap Connect to App Store to try again."
         case .configuration: return "Purchases are not configured for this app yet."
         case .localStoreUnsupported: return "Use an App Store Sandbox account or TestFlight to test server-verified purchases. Local StoreKit transactions cannot buy server credits."
         }

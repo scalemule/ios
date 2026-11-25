@@ -636,6 +636,14 @@ for the same intended gift. The queue is partitioned by app key and user; stop
 both stores before switching identities. App key rotation requires recovering
 any old queue before dropping the old namespace.
 
+If Apple cannot verify the app transaction at startup, `needsAppStoreConnection`
+becomes true and the shared views offer **Connect to App Store**. Custom views
+should call `connectToAppStore()` only after an explicit tap: Apple's
+`AppTransaction.refresh()` may display its sign-in sheet. Automatic `start()`
+never invokes that prompt or guesses a purchase environment. Product-loading
+failures offer a separate reload action. Use TestFlight or a Sandbox Apple
+Account with a development-signed build for real server-verified purchase tests.
+
 `CommerceService` is usable without the provided views. The shared views inherit
 your app tint, keep artwork visible, and offer optional muted MP4 gift animation
 with Reduced Motion support. Owned gifts do not have monetary redemption value.
