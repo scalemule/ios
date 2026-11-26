@@ -714,3 +714,28 @@ while active can keep the collection current; stop it in the background.
 your app tint, keep artwork visible, and offer optional muted MP4 gift animation
 with Reduced Motion support. Owned gifts do not have monetary redemption value.
 Inventory confirms receipt; this module does not itself send gift push messages.
+
+### Durable notification Inbox and badge policy
+
+`NotificationInboxService(app:)` reads `/v1/notifications`, gets the unread
+count, and marks an individual item or the whole Inbox read using the signed-in
+session. `NotificationInboxModel` supplies published items, pagination, unread
+count, loading/error states and optional polling. Attach it with the signed-in
+user ID; reset it at sign-out. In-flight responses from an earlier account are
+ignored. Load/refresh do not mark anything read. Call `markRead(id:)` only when
+an item is viewed or its push is tapped; failures retain its unread state.
+
+The OS icon and the Inbox are independent. `push.clearBadge()` sets only the
+home-screen icon to zero. `push.setBadgeCount(count)` sets an absolute,
+nonnegative count and reports success. Neither method marks messages or Inbox
+items read. An app that clears on activation should omit `.badge` from
+`foregroundPresentationOptions` and refresh its Inbox on foreground delivery.
+A general push should navigate to its Inbox content, not an unrelated feed.
+
+On the server, a direct push for a registered user creates one durable item per
+send/user, shared across their devices. Its `notification_id` travels with the
+push. Apple alerts for durable items default to the current unread notification
+count; native events with separate read state use an attention badge. Explicit
+server `badge` values (including `0`) take precedence. Badge permission, sound
+preferences and Focus remain controlled by iOS. None of this is an aggregate
+read count across separate chat, social and gift stores.
