@@ -295,4 +295,6 @@ public enum EntityErrorCode {
     public static let memberNotFound = "ENTITY_MEMBER_NOT_FOUND"
     public static let versionConflict = "ENTITY_VERSION_CONFLICT"
     public static let kindNotAvailable = "ENTITY_KIND_NOT_AVAILABLE"
+    /// Two changes met; nothing was written. The same call succeeds when repeated.
+    public static let busy = "ENTITY_BUSY"
 }
