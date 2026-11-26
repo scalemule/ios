@@ -39,6 +39,32 @@ final class AuthServiceLedveryTests: XCTestCase {
         XCTAssertEqual(LedveryUpstream.email.rawValue, "scalemule_consumer")
     }
 
+    func testSheetCompletionRequiresItsOwnCallbackAndStateBeforeExchange() async throws {
+        let (app, _) = createTestClient()
+        let auth = AuthService(app: app)
+        let target = try XCTUnwrap(URL(string: callback))
+        let started = LedveryAuthorization(url: target, state: "first-attempt")
+        MockURLProtocol.requestHandler = { _ in
+            XCTFail("an unrelated callback must never reach the exchange")
+            return TestFixtures.envelopedResponse(json: "{}")
+        }
+        let callbacks = [
+            callback + "?code=code",
+            callback + "?code=code&state=second-attempt",
+            callback + "?code=code&state=first-attempt&state=second-attempt",
+            callback + "/other?code=code&state=first-attempt",
+            callback + "?code=code&error=access_denied&state=first-attempt",
+        ]
+        for address in callbacks {
+            let url = try XCTUnwrap(URL(string: address))
+            let result = await auth.completeLedverySignIn(callbackURL: url, expectedCallback: target, authorization: started)
+            XCTAssertEqual(assertApiFailure(result)?.code, .validationError)
+        }
+        let cancelled = try XCTUnwrap(URL(string: callback + "?error=access_denied&state=first-attempt"))
+        let result = await auth.completeLedverySignIn(callbackURL: cancelled, expectedCallback: target, authorization: started)
+        XCTAssertEqual(assertApiFailure(result)?.rawCode, AuthService.signInCancelledCode)
+    }
+
     func testCompleteExchangesCodeAndSignsIn() async {
         let (app, _) = createTestClient()
         let auth = AuthService(app: app)
@@ -55,7 +81,9 @@ final class AuthServiceLedveryTests: XCTestCase {
         }
 
         let url = URL(string: "\(callback)?code=code-123&state=st.sig")!
-        let result = await auth.completeLedverySignIn(callbackURL: url)
+        let target = URL(string: callback)!
+        let started = LedveryAuthorization(url: target, state: "st.sig")
+        let result = await auth.completeLedverySignIn(callbackURL: url, expectedCallback: target, authorization: started)
         guard case .signedIn(let user, let isNewUser)? = assertApiSuccess(result) else {
             return XCTFail("expected signedIn")
         }
