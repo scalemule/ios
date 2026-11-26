@@ -117,7 +117,33 @@ extension AuthService {
 
     // MARK: - Step 2: finish with the callback Ledvery returned
 
-    /// Finish a Ledvery sign-in from the callback URL the sign-in sheet returned.
+    /// Finish a split browser flow using the authorization returned by its start call.
+    public func completeLedverySignIn(
+        callbackURL: URL, expectedCallback: URL, authorization: LedveryAuthorization
+    ) async -> ApiResponse<LedverySignInOutcome> {
+        guard let state = authorization.state, !state.isEmpty,
+              var received = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false),
+              var expected = URLComponents(url: expectedCallback, resolvingAgainstBaseURL: false),
+              expected.scheme != nil, expected.fragment == nil, received.fragment == nil,
+              expected.user == nil, expected.password == nil else {
+            return .failure(ApiError(code: .validationError, message: "Please start sign-in again."))
+        }
+        let items = received.queryItems ?? []
+        let registeredItems = expected.queryItems ?? []
+        let registeredNames = Set(registeredItems.map(\.name))
+        received.query = nil
+        expected.query = nil
+        let states = items.filter { $0.name == "state" }
+        guard received == expected, states.count == 1, states.first?.value == state,
+              items.filter({ $0.name == "code" || $0.name == "error" }).count == 1,
+              items.filter({ registeredNames.contains($0.name) }) == registeredItems else {
+            return .failure(ApiError(code: .validationError, message: "Please start sign-in again."))
+        }
+        return await completeLedverySignIn(callbackURL: callbackURL)
+    }
+
+    /// Exchange an already validated callback. Callers who own the browser flow must
+    /// validate the destination and state first, or use the overload taking the authorization.
     /// On success the session is stored and auth state becomes `.authenticated`.
     public func completeLedverySignIn(callbackURL: URL) async -> ApiResponse<LedverySignInOutcome> {
         let items = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?.queryItems ?? []
@@ -267,6 +293,10 @@ extension AuthService {
         case .failure(let error): return .failure(error)
         }
 
+        guard let state = authorization.state, !state.isEmpty else {
+            return .failure(ApiError(code: .validationError, message: "Please start sign-in again."))
+        }
+
         let returned: URL
         switch await LedveryWebSession.run(
             url: authorization.url,
@@ -278,7 +308,7 @@ extension AuthService {
         case .failure(let error): return .failure(error)
         }
 
-        return await completeLedverySignIn(callbackURL: returned)
+        return await completeLedverySignIn(callbackURL: returned, expectedCallback: callbackURL, authorization: authorization)
     }
 }
 
