@@ -34,8 +34,9 @@ private func postJSON(
     return "{" + fields.joined(separator: ",") + "}"
 }
 
-private func page(_ ids: [String], user: String = "u2") -> String {
-    #"{"posts":[\#(ids.map { postJSON(id: $0, user: user) }.joined(separator: ","))]}"#
+private func page(_ ids: [String], user: String = "u2", next: String? = nil, asOf: Int64 = 100, gap: Bool = false) -> String {
+    let cursor = next.map { #","next_cursor":"\#($0)""# } ?? ""
+    return #"{"posts":[\#(ids.map { postJSON(id: $0, user: user) }.joined(separator: ","))],"as_of":\#(asOf),"gap":\#(gap)\#(cursor)}"#
 }
 
 // MARK: - MediaPost
@@ -382,10 +383,10 @@ final class SocialFeedModelTests: XCTestCase {
         try? FileManager.default.removeItem(at: folder)
     }
 
-    private func model(user: String? = "u1") async -> SocialFeedModel {
+    private func model(user: String? = "u1", pageSize: Int = 3) async -> SocialFeedModel {
         let (app, _) = createTestClient()
         try? await app.sessionManager.setCredentials(CredentialSet(sessionToken: "sess_123", sessionExpiresAt: Date().addingTimeInterval(3600)))
-        let model = SocialFeedModel(pageSize: 3, cacheDirectory: folder)
+        let model = SocialFeedModel(pageSize: pageSize, cacheDirectory: folder)
         model.attach(social: SocialService(app: app), photos: PhotosService(app: app), currentUserId: user)
         return model
     }
@@ -434,7 +435,7 @@ final class SocialFeedModelTests: XCTestCase {
 
     func testPagesAndStopsAtAShortPage() async {
         server.start { request in
-            request.url!.query!.contains("page=1") ? ok(page(["a", "b", "c"])) : ok(page(["c", "d"]))
+            request.url!.query!.contains("before=c") ? ok(page(["c", "d"])) : ok(page(["a", "b", "c"], next: "c"))
         }
         let model = await model()
         await model.loadFeed()
@@ -445,7 +446,7 @@ final class SocialFeedModelTests: XCTestCase {
         XCTAssertEqual(model.items.map(\.id), ["a", "b", "c", "d"], "posts already shown are skipped")
         XCTAssertFalse(model.hasMore, "a short page is the last")
         await model.loadMore()
-        XCTAssertEqual(server.requests, ["GET /v1/social/feed?page=1", "GET /v1/social/feed?page=2"])
+        XCTAssertEqual(server.requests, ["GET /v1/social/feed", "GET /v1/social/feed"])
     }
 
     func testMineListsYourOwnPosts() async {
@@ -678,7 +679,7 @@ final class SocialFeedModelTests: XCTestCase {
     }
 
     func testARestoredPostOlderThanTheLoadedPagesWaitsForItsPage() async throws {
-        server.start { _ in ok(page(["a", "b", "c"])) }
+        server.start { _ in ok(page(["a", "b", "c"], next: "c")) }
         let model = await model()
         await model.loadFeed()
         XCTAssertTrue(model.hasMore)
@@ -722,6 +723,26 @@ final class SocialFeedModelTests: XCTestCase {
         model.insertOwnPost(mine)
         model.insertOwnPost(mine)
         XCTAssertEqual(model.items.map(\.id), ["new", "a"])
+    }
+
+    func testRefreshingAShownFeedDoesNotStartCompetingPageRequests() async {
+        let lock = NSLock()
+        var count = 0
+        server.start { _ in
+            let call = lock.withLock { count += 1; return count }
+            if call == 2 { Thread.sleep(forTimeInterval: 0.15) }
+            return ok(page(call == 1 ? ["old"] : ["new"], next: "older"))
+        }
+        let model = await model()
+        await model.loadFeed()
+        let refresh = Task { await model.refresh() }
+        await waitUntil { self.server.requests.count == 2 }
+        await model.checkForNewPosts()
+        await model.loadMore()
+        await refresh.value
+        XCTAssertEqual(server.requests.count, 2, "refresh owns cursor state until its first page arrives")
+        XCTAssertEqual(model.items.map(\.id), ["new"])
+        XCTAssertTrue(model.newItems.isEmpty)
     }
 
     func testFixedContentLoadsNothing() async throws {
@@ -771,3 +792,174 @@ final class MediaPostViewsTests: XCTestCase {
     }
 }
 #endif
+
+extension SocialFeedModelTests {
+    func testCursorRequestsOnlyNewPostsAndPreservesTheCurrentPage() async {
+        var queries: [[String: String]] = []
+        server.start { request in
+            let q = Dictionary(uniqueKeysWithValues: URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!.map { ($0.name, $0.value ?? "") })
+            queries.append(q)
+            return ok(q["after"] == nil ? page(["a", "b", "c"], next: "c", asOf: 900) : page(["new"], asOf: 950))
+        }
+        let model = await model()
+        await model.loadFeed()
+        await model.checkForNewPosts()
+        XCTAssertEqual(queries[1]["after"], "a")
+        XCTAssertEqual(queries[1]["since"], "900")
+        XCTAssertNil(queries[1]["page"])
+        XCTAssertEqual(model.items.map(\.id), ["a", "b", "c"])
+        XCTAssertEqual(model.newItems.map(\.id), ["new"])
+        model.showNewItems()
+        XCTAssertEqual(model.items.map(\.id), ["new", "a", "b", "c"])
+    }
+
+    func testFullPageWithoutCursorIsTheEnd() async {
+        server.start { _ in ok(page(["a", "b", "c"])) }
+        let model = await model()
+        await model.loadFeed()
+        XCTAssertFalse(model.hasMore)
+        await model.loadMore()
+        XCTAssertEqual(server.requests.count, 1)
+    }
+
+    func testBurstGapReplacesHistoryOnlyOnTapAndContinuesAtItsOwnCursor() async {
+        var calls = 0
+        server.start { request in
+            calls += 1
+            if request.url!.query!.contains("before=z") { return ok(page(["between", "a"])) }
+            if calls == 1 { return ok(page(["a", "b", "c"], next: "c")) }
+            if request.url!.query!.contains("after=a") { return ok(page(["x", "y", "z"], gap: true)) }
+            return ok(page(["x", "y", "z"], next: "z"))
+        }
+        let model = await model()
+        await model.loadFeed()
+        await model.checkForNewPosts()
+        XCTAssertEqual(calls, 3, "a gap fetches one bounded replacement page")
+        XCTAssertEqual(model.items.map(\.id), ["a", "b", "c"], "the active feed does not jump")
+        model.showNewItems()
+        XCTAssertEqual(model.items.map(\.id), ["x", "y", "z"])
+        await model.loadMore()
+        XCTAssertEqual(model.items.map(\.id), ["x", "y", "z", "between", "a"], "no missing interval between new and old posts")
+    }
+
+    func testPendingMetadataIsBoundedAndOverflowKeepsAContinuation() async {
+        var sequence = 0
+        server.start { request in
+            if request.url!.query!.contains("before=") { return ok(page(["older"])) }
+            if request.url!.query!.contains("after=") { sequence += 1 }
+            let ids = sequence == 0 ? ["old"] : ["n\(sequence)-a", "n\(sequence)-b", "n\(sequence)-c"]
+            return ok(page(ids, next: ids.last))
+        }
+        let model = await model()
+        await model.loadFeed()
+        for _ in 0..<25 {
+            await model.checkForNewPosts()
+            XCTAssertLessThanOrEqual(model.newItems.count, model.maximumPendingItems)
+            XCTAssertEqual(model.items.map(\.id), ["old"])
+        }
+        model.showNewItems()
+        XCTAssertTrue(model.items.first!.id.hasPrefix("n25-"))
+        await model.loadMore()
+        XCTAssertEqual(model.items.last?.id, "older")
+    }
+
+    func testStoppedPollingCannotPublishAnInFlightResponse() async {
+        server.start { request in
+            if request.url!.query!.contains("after=") { Thread.sleep(forTimeInterval: 0.2); return ok(page(["new"])) }
+            return ok(page(["old"]))
+        }
+        let model = await model()
+        await model.loadFeed()
+        let poll = Task { await model.checkForNewPosts() }
+        await waitUntil { self.server.requests.count == 2 }
+        model.stopPolling()
+        await poll.value
+        XCTAssertTrue(model.newItems.isEmpty)
+        XCTAssertEqual(model.items.map(\.id), ["old"])
+    }
+
+    func testOnlyOneFreshnessRequestCanBeInFlight() async {
+        server.start { request in
+            if request.url!.query!.contains("after=") { Thread.sleep(forTimeInterval: 0.1) }
+            return ok(page(["old"]))
+        }
+        let model = await model()
+        await model.loadFeed()
+        async let first: Void = model.checkForNewPosts()
+        async let second: Void = model.checkForNewPosts()
+        _ = await (first, second)
+        XCTAssertEqual(server.requests.count, 2)
+    }
+
+    func testPurgedFreshnessCursorReanchorsWithoutInterruptingPlayback() async {
+        var calls = 0
+        server.start { request in
+            calls += 1
+            if request.url!.query!.contains("after=") {
+                return TestFixtures.mockResponse(statusCode: 400, json: #"{"success":false,"error":{"code":"INVALID_INPUT","message":"Unknown post in the cursor"}}"#)
+            }
+            return ok(calls == 1 ? page(["purged", "old"]) : page(["fresh"], next: "fresh"))
+        }
+        let model = await model()
+        await model.loadFeed()
+        await model.checkForNewPosts()
+        XCTAssertEqual(model.items.first?.id, "purged")
+        XCTAssertEqual(model.newItems.first?.id, "fresh")
+        model.showNewItems()
+        XCTAssertEqual(model.items.map(\.id), ["fresh"])
+        XCTAssertTrue(model.hasMore)
+    }
+
+    func testIncomingPreparationSharesBudgetAndKeepsNearestItems() throws {
+        let videos = try (0..<6).map { i in try XCTUnwrap(MediaPost(post: socialPost(postJSON(id: "v\(i)", metadata: #"{"kind":"video"}"#)), currentUserId: nil)) }
+        let photos = try (0..<6).map { i in try XCTUnwrap(MediaPost(post: socialPost(postJSON(id: "p\(i)")), currentUserId: nil)) }
+        let plan = FeedPreloadPlan(upcoming: Array(videos.prefix(5)) + photos, incoming: videos[5], allowIncoming: true)
+        XCTAssertEqual(plan.videos.map(\.id), ["v0", "v1", "v2", "v5"])
+        XCTAssertEqual(plan.photos.map(\.id), ["p0", "p1", "p2", "p3"])
+        let warm = FeedPreloadPlan(upcoming: videos + photos, incoming: videos[5], allowIncoming: false)
+        XCTAssertEqual(warm.videos.map(\.id), ["v0", "v1", "v2", "v3"], "power/thermal restriction restores the existing scroll window")
+        let duplicate = FeedPreloadPlan(upcoming: videos, incoming: videos[1], allowIncoming: true)
+        XCTAssertEqual(duplicate.videos.map(\.id), ["v0", "v1", "v2", "v3"])
+    }
+}
+
+
+extension SocialFeedModelTests {
+    func testLargeConfiguredPagesNeverTruncateAPendingContinuation() async {
+        var calls = 0
+        server.start { request in
+            calls += 1
+            if calls == 1 { return ok(page(["old"])) }
+            XCTAssertTrue(request.url!.query!.contains("per_page=60"))
+            let ids = (0..<60).map { "new-\($0)" }
+            return ok(page(ids, next: "new-59", gap: calls == 2))
+        }
+        let model = await model(pageSize: 100)
+        await model.loadFeed()
+        await model.checkForNewPosts()
+        XCTAssertEqual(model.newItems.count, 60)
+        model.showNewItems()
+        XCTAssertEqual(model.items.last?.id, "new-59")
+        XCTAssertTrue(model.hasMore)
+    }
+
+    func testRefreshInvalidatesAnOlderFreshnessRequest() async {
+        var calls = 0
+        server.start { request in
+            calls += 1
+            if request.url!.query!.contains("after=") {
+                Thread.sleep(forTimeInterval: 0.2)
+                return ok(page(["stale-poll"]))
+            }
+            return ok(page([calls == 1 ? "old" : "refreshed"]))
+        }
+        let model = await model()
+        await model.loadFeed()
+        let poll = Task { await model.checkForNewPosts() }
+        await waitUntil { self.server.requests.count == 2 }
+        await model.refresh()
+        await poll.value
+        XCTAssertEqual(model.items.map(\.id), ["refreshed"])
+        XCTAssertTrue(model.newItems.isEmpty)
+    }
+}

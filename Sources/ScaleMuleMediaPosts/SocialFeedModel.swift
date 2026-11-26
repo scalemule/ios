@@ -102,6 +102,17 @@ public final class SocialFeedModel: ObservableObject {
     private var hiddenPostIds: Set<String> = []
     private var blockedAuthorIds: Set<String> = []
     private var nextPage = 1
+    private var nextCursor: String?
+    private var newestCursor: String?
+    private var syncAsOf: Int64?
+    private var pendingNextCursor: String?
+    private var pendingResetsHistory = false
+    private var checkingNew = false
+    private var loadingFirstPage = false
+    private var pollGeneration = 0
+    private var pollFailures = 0
+    /// Only metadata is retained here; media preparation has a separate small budget.
+    public let maximumPendingItems = 60
     /// The latest load; an earlier one still running (another filter) is dropped.
     private var loadGeneration = 0
     private var pollTask: Task<Void, Never>?
@@ -127,7 +138,7 @@ public final class SocialFeedModel: ObservableObject {
         cacheDirectory: URL? = nil,
         location: LocationAccess = .shared
     ) {
-        self.pageSize = pageSize
+        self.pageSize = min(max(pageSize, 1), 100)
         self.pollInterval = pollInterval
         self.savedPageName = savedPageName
         self.cacheDirectory = cacheDirectory
@@ -135,7 +146,7 @@ public final class SocialFeedModel: ObservableObject {
     }
     #else
     public init(pageSize: Int = 20, pollInterval: TimeInterval = 15, savedPageName: String = "feed", cacheDirectory: URL? = nil) {
-        self.pageSize = pageSize
+        self.pageSize = min(max(pageSize, 1), 100)
         self.pollInterval = pollInterval
         self.savedPageName = savedPageName
         self.cacheDirectory = cacheDirectory
@@ -208,10 +219,17 @@ public final class SocialFeedModel: ObservableObject {
         if isFixed { return }
         loadGeneration += 1
         let mine = loadGeneration
+        loadingFirstPage = true
+        defer { if mine == loadGeneration { loadingFirstPage = false } }
         isLoading = items.isEmpty
         error = nil
         do {
             nextPage = 1
+            nextCursor = nil
+            newestCursor = nil
+            syncAsOf = nil
+            pendingResetsHistory = false
+            pendingNextCursor = nil
             hasMore = true
             let page = try await fetchNext(generation: mine)
             guard mine == loadGeneration else { return }
@@ -235,7 +253,7 @@ public final class SocialFeedModel: ObservableObject {
 
     /// The next page, appended (posts already shown are skipped).
     public func loadMore() async {
-        guard !isFixed, !isLoadingMore, !isLoading, hasMore else { return }
+        guard !isFixed, !isLoadingMore, !isLoading, !loadingFirstPage, hasMore else { return }
         isLoadingMore = true
         defer { isLoadingMore = false }
         do {
@@ -251,10 +269,23 @@ public final class SocialFeedModel: ObservableObject {
 
     /// Put the waiting new posts at the top.
     public func showNewItems() {
-        guard !newItems.isEmpty else { return }
-        let known = Set(newItems.map(\.id))
-        items = visible(fromServer(newItems)) + items.filter { !known.contains($0.id) }
+        guard !newItems.isEmpty, !loadingFirstPage else { return }
+        // An explicit tap may replace history after a burst. Never join two
+        // non-contiguous pages and silently skip everything in the gap.
+        loadGeneration += 1
+        let incoming = visible(fromServer(newItems))
+        if pendingResetsHistory {
+            items = incoming
+            nextCursor = pendingNextCursor
+            hasMore = nextCursor != nil
+        } else {
+            let known = Set(incoming.map(\.id))
+            items = incoming + items.filter { !known.contains($0.id) }
+        }
+        pendingResetsHistory = false
+        pendingNextCursor = nil
         newItems = []
+        if filter == .everyone { savePage(items) }
     }
 
     /// Put a post the person just made at the top right away (under
@@ -481,11 +512,12 @@ public final class SocialFeedModel: ObservableObject {
 
     /// Look for new posts every `pollInterval` seconds until `stopPolling()`.
     public func startPolling() {
-        pollTask?.cancel()
-        let interval = pollInterval
+        guard pollTask == nil, !isFixed else { return }
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                guard let interval = self?.pollInterval, let failures = self?.pollFailures else { return }
+                let delay = max(0.01, interval.isFinite ? interval : 15) * pow(2, Double(min(failures, 2))) * Double.random(in: 0.9...1.1)
+                try? await Task.sleep(nanoseconds: UInt64(min(delay, 3600) * 1_000_000_000))
                 guard !Task.isCancelled else { return }
                 await self?.checkForNewPosts()
             }
@@ -495,25 +527,73 @@ public final class SocialFeedModel: ObservableObject {
     public func stopPolling() {
         pollTask?.cancel()
         pollTask = nil
+        pollGeneration += 1
     }
 
-    /// One look for posts newer than those shown (everyone's feed only). An
-    /// empty feed shows them at once; otherwise they wait in `newItems`.
+    /// Keep the current post anchored while collecting only newer metadata.
+    /// Large bursts become a bounded first page, adopted only on the user's tap.
     public func checkForNewPosts() async {
-        guard !isFixed, let social, filter == .everyone || filter == .following, !isLoading else { return }
-        let asked = filter
+        guard !isFixed, let social, filter == .everyone || filter == .following,
+              !isLoading, !loadingFirstPage, !checkingNew, hasLoaded else { return }
+        checkingNew = true
+        defer { checkingNew = false }
+        let asked = filter, generation = loadGeneration, polling = pollGeneration
         let scope: FeedScope = asked == .following ? .following : .everyone
-        guard case .success(let posts) = await social.feed(scope: scope, page: 1, perPage: pageSize), filter == asked else { return }
-        let known = Set(items.map(\.id)).union(newItems.map(\.id))
-        let fresh = posts
-            .compactMap { MediaPost(post: $0, currentUserId: currentUserId) }
-            .filter { !known.contains($0.id) }
-            .filter { !hiddenPostIds.contains($0.id) && !blockedAuthorIds.contains($0.authorId) }
-        guard !fresh.isEmpty else { return }
-        if items.isEmpty {
-            items = fresh
+        func current() -> Bool {
+            !Task.isCancelled && asked == filter && generation == loadGeneration && polling == pollGeneration
+        }
+        let result = await social.feedPage(scope: scope, after: newestCursor, since: syncAsOf, perPage: min(pageSize, maximumPendingItems))
+        guard current() else { return }
+        var response: SocialFeedPage
+        var reset = false
+        switch result {
+        case .success(let page): response = page
+        case .failure(let error) where error.statusCode == 400 && newestCursor != nil:
+            // A purged cursor cannot be looked up by Social. Re-anchor quietly;
+            // adoption still waits for a tap so playback is not interrupted.
+            let fresh = await social.feedPage(scope: scope, perPage: min(pageSize, maximumPendingItems))
+            guard current() else { return }
+            guard case .success(let page) = fresh else { pollFailures = min(pollFailures + 1, 2); return }
+            response = page
+            reset = true
+        case .failure:
+            pollFailures = min(pollFailures + 1, 2)
+            return
+        }
+        // No cursor (an empty feed), a server gap, or a full pending buffer:
+        // obtain an older-page cursor for the replacement, not the old history.
+        if response.gap || response.posts.count + newItems.count > maximumPendingItems {
+            let fresh = await social.feedPage(scope: scope, perPage: min(pageSize, maximumPendingItems))
+            guard current() else { return }
+            guard case .success(let page) = fresh else { pollFailures = min(pollFailures + 1, 2); return }
+            response = page
+            reset = true
+        }
+        pollFailures = 0
+        let firstLoad = newestCursor == nil
+        if let newest = response.posts.first?.id { newestCursor = newest }
+        syncAsOf = response.asOf ?? syncAsOf
+        if let removed = response.removed, !removed.isEmpty {
+            let ids = Set(removed)
+            items.removeAll { ids.contains($0.id) }
+            newItems.removeAll { ids.contains($0.id) }
+        }
+        let mapped = visible(response.posts.compactMap { MediaPost(post: $0, currentUserId: currentUserId) })
+        if items.isEmpty && newItems.isEmpty {
+            if !mapped.isEmpty { items = fromServer(mapped) }
+            if reset || firstLoad {
+                nextCursor = response.nextCursor
+                hasMore = nextCursor != nil
+            }
+            if asked == .everyone, !mapped.isEmpty { savePage(items) }
+        } else if reset || firstLoad {
+            newItems = Array(mapped.prefix(maximumPendingItems))
+            pendingResetsHistory = true
+            pendingNextCursor = response.nextCursor
         } else {
-            newItems = fresh + newItems
+            let known = Set(items.map(\.id)).union(newItems.map(\.id))
+            let fresh = mapped.filter { !known.contains($0.id) }
+            if !fresh.isEmpty { newItems = Array((fresh + newItems).prefix(maximumPendingItems)) }
         }
     }
 
@@ -578,15 +658,24 @@ public final class SocialFeedModel: ObservableObject {
         guard let social else { throw FeedError(message: "Not signed in") }
         let userId = currentUserId
         switch filter {
-        case .everyone:
-            let result = await social.feed(page: nextPage, perPage: pageSize)
+        case .everyone, .following:
+            let first = nextPage == 1
+            let scope: FeedScope = filter == .following ? .following : .everyone
+            let result = await social.feedPage(scope: scope, before: first ? nil : nextCursor, perPage: pageSize)
             try stillCurrent(generation)
-            return try page(result).compactMap { MediaPost(post: $0, currentUserId: userId) }
-
-        case .following:
-            let result = await social.feed(scope: .following, page: nextPage, perPage: pageSize)
-            try stillCurrent(generation)
-            return try page(result).compactMap { MediaPost(post: $0, currentUserId: userId) }
+            switch result {
+            case .success(let page):
+                nextCursor = page.nextCursor
+                hasMore = nextCursor != nil
+                nextPage += 1
+                if first {
+                    newestCursor = page.posts.first?.id
+                    syncAsOf = page.asOf
+                }
+                return page.posts.compactMap { MediaPost(post: $0, currentUserId: userId) }
+            case .failure(let apiError):
+                throw FeedError(message: apiError.userFacingMessage)
+            }
 
         case .mine:
             guard let userId else { throw FeedError(message: "Not signed in") }

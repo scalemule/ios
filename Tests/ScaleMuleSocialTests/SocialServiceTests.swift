@@ -162,3 +162,33 @@ final class SocialServiceTests: XCTestCase {
         XCTAssertEqual(posts?.count, 0)
     }
 }
+
+extension SocialServiceTests {
+    func testCursorFeedPreservesSyncMetadata() async {
+        let (app, social) = await signedIn()
+        MockURLProtocol.requestHandler = { request in
+            let q = Dictionary(uniqueKeysWithValues: URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!.map { ($0.name, $0.value ?? "") })
+            XCTAssertEqual(q, ["after": "newest", "since": "900", "scope": "following", "per_page": "100"])
+            return TestFixtures.envelopedResponse(json: #"{"posts":[\#(Self.postJSON)],"as_of":950,"removed":["deleted"],"gap":true}"#)
+        }
+        let page = assertApiSuccess(await social.feedPage(scope: .following, after: "newest", since: 900, perPage: 500))
+        XCTAssertEqual(page?.asOf, 950)
+        XCTAssertEqual(page?.removed, ["deleted"])
+        XCTAssertEqual(page?.gap, true)
+        XCTAssertNil(page?.nextCursor)
+        withExtendedLifetime(app) {}
+    }
+
+    func testOlderCursorAndUnavailableRemovalsDecode() async {
+        let (_, social) = await signedIn()
+        MockURLProtocol.requestHandler = { request in
+            let q = Dictionary(uniqueKeysWithValues: URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!.map { ($0.name, $0.value ?? "") })
+            XCTAssertEqual(q, ["before": "oldest", "per_page": "20"])
+            return TestFixtures.envelopedResponse(json: #"{"posts":[\#(Self.postJSON)],"next_cursor":"older","as_of":950}"#)
+        }
+        let page = assertApiSuccess(await social.feedPage(before: "oldest"))
+        XCTAssertEqual(page?.nextCursor, "older")
+        XCTAssertNil(page?.removed, "absent removal history must not be interpreted as authoritative")
+        XCTAssertEqual(page?.gap, false)
+    }
+}
