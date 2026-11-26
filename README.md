@@ -791,3 +791,20 @@ count; native events with separate read state use an attention badge. Explicit
 server `badge` values (including `0`) take precedence. Badge permission, sound
 preferences and Focus remain controlled by iOS. None of this is an aggregate
 read count across separate chat, social and gift stores.
+
+### Gift tray caching
+
+`AppleGiftStore.catalogProducts()` coalesces requests and caches catalogue pages
+for five minutes, scoped to the store (tenant/session), environment and cursor.
+`GiftPickerView` renders a fresh cached first page immediately. Call `stop()` on
+sign-out as with transaction handling; this clears catalogue pages and prevents
+in-flight requests from repopulating them. Checkout reconnection retains the
+catalogue. Balance and delivery calls remain uncached, and the server validates
+expected price and availability when sending a gift.
+
+Gift artwork loads on demand, with at most three downloads/decodes at once and
+ImageIO downsampling off the main thread (320 pixels for tiles, 960 for detail).
+Decoded images use a 16 MB / 64-entry memory cache; transparent PNG thumbnails
+use a 32 MB / 64-file disk cache. Artwork expires within 24 hours; shorter CDN
+`max-age` and `no-store`/`no-cache` directives are respected. Memory warnings drop
+decoded images. No catalogue or artwork prefetch is added to feed startup.

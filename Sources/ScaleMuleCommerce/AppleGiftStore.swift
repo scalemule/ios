@@ -30,6 +30,7 @@ public final class AppleGiftStore: ObservableObject {
     @Published public private(set) var enabled = false
     @Published public private(set) var needsAppStoreConnection = false
     public let commerce: CommerceService
+    private let catalogCache = GiftCatalogCache()
     private var context: ApplePurchaseContext?
     private var checkoutContexts: [CommerceEnvironment: ApplePurchaseContext] = [:]
     private var generation = UUID()
@@ -97,8 +98,16 @@ public final class AppleGiftStore: ObservableObject {
         await commerce.balance(environment: walletEnvironment)
     }
 
+    /// Fresh products for the first rendered frame, without a loading flash.
+    public var cachedCatalogProducts: [GiftProduct]? { catalogCache.snapshot(environment: catalogEnvironment) }
+
+    /// Catalogue pages are shared for five minutes. Checkout always validates
+    /// the displayed price, availability and balance on the server.
     public func catalogProducts(before: String? = nil) async -> ApiResponse<[GiftProduct]> {
-        await commerce.products(environment: catalogEnvironment, before: before)
+        let environment = catalogEnvironment
+        return await catalogCache.products(environment: environment, before: before) { [commerce] in
+            await commerce.products(environment: environment, before: before)
+        }
     }
 
     private static func verifiedAppEnvironment(refresh: Bool) async throws -> CommerceEnvironment {
@@ -113,7 +122,7 @@ public final class AppleGiftStore: ObservableObject {
 
     private func load(refreshAppTransaction: Bool) async {
         guard !isLoading, !isPurchasing else { return }
-        stop()
+        resetCheckout()
         let run = generation
         isLoading = true
         defer { if generation == run { isLoading = false } }
@@ -242,6 +251,11 @@ public final class AppleGiftStore: ObservableObject {
     }
 
     public func stop() {
+        catalogCache.clear()
+        resetCheckout()
+    }
+
+    private func resetCheckout() {
         generation = UUID(); listener?.cancel(); listener = nil
         installationTask?.cancel(); installationTask = nil
         context = nil; checkoutContexts = [:]; environment = nil; offers = []; pendingTransactions = []; processing = []

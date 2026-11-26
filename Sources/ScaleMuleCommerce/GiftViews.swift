@@ -31,12 +31,18 @@ public struct GiftPickerView: View {
     public init(store: AppleGiftStore, delivery: GiftDeliveryStore, recipientID: String, recipientName: String,
                 contextType: String? = nil, contextID: String? = nil) {
         self.store = store; self.delivery = delivery
+        let cached = store.cachedCatalogProducts
+        self._products = State(initialValue: Self.ordered(cached ?? []))
+        self._loading = State(initialValue: cached == nil)
         self._recipient = State(initialValue: GiftRecipient(id: recipientID, name: recipientName))
         self.loadRecipients = nil; self.contextType = contextType; self.contextID = contextID
     }
     public init(store: AppleGiftStore, delivery: GiftDeliveryStore,
                 loadRecipients: @escaping @MainActor () async throws -> [GiftRecipient]) {
         self.store = store; self.delivery = delivery; self._recipient = State(initialValue: nil)
+        let cached = store.cachedCatalogProducts
+        self._products = State(initialValue: Self.ordered(cached ?? []))
+        self._loading = State(initialValue: cached == nil)
         self.loadRecipients = loadRecipients; self.contextType = nil; self.contextID = nil
     }
 
@@ -93,7 +99,7 @@ public struct GiftPickerView: View {
         .task { async let wallet: Void = refreshBalance(); await load(); await wallet }
         .onChange(of: store.fulfillmentRevision) { _ in Task { await refreshBalance() } }
         .onChange(of: store.walletEnvironment) { _ in
-            balance = nil
+            balance = nil; products = []; selected = nil; hasMore = false; productCursor = nil
             Task { async let wallet: Void = refreshBalance(); await load(); await wallet }
         }
         .onChange(of: delivery.lastDelivered?.id) { _ in
@@ -182,7 +188,7 @@ public struct GiftPickerView: View {
         guard catalogLoad == run, store.catalogEnvironment == browsing, !Task.isCancelled else { return }
         switch items {
         case .success(let value):
-            productCursor = value.last?.id; products = ordered(value); hasMore = value.count == 30
+            productCursor = value.last?.id; products = Self.ordered(value); hasMore = value.count == 30
             if !products.contains(where: { $0.id == selected }) { selected = nil }
         case .failure(let failure): error = failure.message
         }
@@ -196,11 +202,11 @@ public struct GiftPickerView: View {
         case .success(let next):
             productCursor = next.last?.id
             let existing = Set(products.map(\.id))
-            products = ordered(products + next.filter { !existing.contains($0.id) }); hasMore = next.count == 30
+            products = Self.ordered(products + next.filter { !existing.contains($0.id) }); hasMore = next.count == 30
         case .failure(let failure): error = failure.message
         }
     }
-    private func ordered(_ items: [GiftProduct]) -> [GiftProduct] {
+    private static func ordered(_ items: [GiftProduct]) -> [GiftProduct] {
         items.sorted { $0.unitPriceMinor == $1.unitPriceMinor ? $0.id < $1.id : $0.unitPriceMinor < $1.unitPriceMinor }
     }
     private func refreshBalance() async {
@@ -299,19 +305,6 @@ public struct CommerceWalletView: View {
     }
 }
 
-struct GiftArtwork: View {
-    let url: URL
-    var body: some View {
-        AsyncImage(url: url) { phase in
-            switch phase {
-            case .success(let image): image.resizable().scaledToFit()
-            case .failure: Image(systemName: "gift").resizable().scaledToFit().padding(28).foregroundStyle(.secondary)
-            default: ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }.accessibilityHidden(true)
-    }
-}
-
 /// Shared artwork presentation for gifts and reactions. Motion is opt-in and
 /// never hides the still image before a video is ready. Viewing is not consuming.
 public struct GiftPresentationView: View {
@@ -326,7 +319,7 @@ public struct GiftPresentationView: View {
         NavigationStack {
             VStack(spacing: 24) {
                 Text(gift.displayName).font(.largeTitle.bold())
-                GiftArtwork(url: gift.artworkURL).frame(maxWidth: 300, maxHeight: 300)
+                GiftArtwork(url: gift.artworkURL, pixels: 960).frame(maxWidth: 300, maxHeight: 300)
                 if let player { VideoPlayer(player: player).frame(height: 220) }
                 else if let animation = gift.animationURL, !reduceMotion {
                     Button("Play gift animation") {
