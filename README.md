@@ -600,6 +600,28 @@ badge and sound; iOS permission, Focus and sound settings still apply. Call
 `clearBadge()` when your app considers notifications seen; that does not mark
 server inbox records read. Notifications are cleared from the device on logout.
 
+Quiet hours are a server-enforced preference exposed by the SDK:
+
+```swift
+let push = PushNotifications(app: app, defaultQuietHours: .overnight)
+// After authentication/registration, observe push.quietHours and its loading/error state.
+await push.setQuietHours(PushQuietHours(startMinutes: 22 * 60, endMinutes: 8 * 60))
+```
+
+`.overnight` defaults to 22:00–08:00 only if the user has no saved preferences;
+re-registering never overwrites a schedule or opt-out. A nil `timeZoneIdentifier`
+follows each receiving device. A named IANA zone fixes the schedule to that zone.
+`PushService.preferences()` and `setQuietHours(_:)` provide the lower-level APIs.
+Use `quietHours.isQuiet()` for local presentation; the server decides delivery.
+
+Continue calling `push.refresh()` when the app becomes active. Registration sends
+`TimeZone.autoupdatingCurrent.identifier`, and the installed manager also refreshes
+on system timezone changes. Travel is known once the device reconnects; no location
+permission is needed. The server rechecks the latest timezone, schedule, opt-outs
+and unread state before releasing queued pushes. Routine alerts wait; explicitly
+urgent `alert` messages and silent updates follow their existing delivery policy.
+Quiet hours do not replace the person's iOS Focus or sound settings.
+
 Enable Push Notifications on the app's Apple App ID and signed target. Keep
 the `aps-environment` entitlement consistent with its provisioning profile.
 For the application's external ScaleMule vault, configure
