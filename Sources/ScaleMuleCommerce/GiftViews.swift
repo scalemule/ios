@@ -142,18 +142,23 @@ public struct GiftPickerView: View {
                         .accessibilityIdentifier("giftGetCredits")
                 }
                 Spacer(minLength: 8)
-                Button { Task { await sendSelected() } } label: {
-                    HStack(spacing: 6) {
-                        if delivery.isSending || (recipient != nil && loadingBalance) { ProgressView().tint(theme.onAccent) }
-                        Text(delivery.isSending ? "Sending…" : (recipient == nil ? "Choose person" : (needsCredits ? "Recharge" : "Send")))
-                        if let product = selectedProduct, !delivery.isSending, !needsCredits, recipient != nil {
-                            Text("· \(product.unitPriceMinor)").monospacedDigit()
+                if recipient != nil && selectedProduct == nil && !delivery.isSending {
+                    Text("Select a gift").font(.subheadline.weight(.medium)).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("giftSelectionPrompt")
+                } else {
+                    Button { Task { await sendSelected() } } label: {
+                        HStack(spacing: 6) {
+                            if delivery.isSending || (recipient != nil && loadingBalance) { ProgressView().tint(theme.onAccent) }
+                            Text(delivery.isSending ? "Sending…" : (recipient == nil ? "Choose person" : (needsCredits ? "Recharge" : "Send")))
+                            if let product = selectedProduct, !delivery.isSending, !needsCredits, recipient != nil {
+                                Text("· \(product.unitPriceMinor)").monospacedDigit()
+                            }
                         }
-                    }
-                }.buttonStyle(GiftPillButtonStyle())
-                    .disabled(delivery.isSending || (recipient != nil && (selectedProduct == nil || loadingBalance)))
-                    .accessibilityIdentifier("giftConfirmSend")
-                    .accessibilityLabel(recipient == nil ? "Choose a person" : (selectedProduct.map { "\(needsCredits ? "Recharge to send" : "Send") \($0.displayName), \($0.unitPriceMinor) credits" } ?? "Choose a gift"))
+                    }.buttonStyle(GiftPillButtonStyle())
+                        .disabled(delivery.isSending || (recipient != nil && (selectedProduct == nil || loadingBalance)))
+                        .accessibilityIdentifier("giftConfirmSend")
+                        .accessibilityLabel(recipient == nil ? "Choose a person" : (selectedProduct.map { "\(needsCredits ? "Recharge to send" : "Send") \($0.displayName), \($0.unitPriceMinor) credits" } ?? "Choose a gift"))
+                }
             }
         }.padding(.horizontal, 20).padding(.vertical, 14).background(.regularMaterial)
     }
