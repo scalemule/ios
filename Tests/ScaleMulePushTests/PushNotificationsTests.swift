@@ -73,6 +73,18 @@ import ScaleMuleTestHelpers
         XCTAssertNil(push.lastError)
     }
 
+    func testSettingAndClearingBadgeDoesNotChangeNotificationPermission() async {
+        let system = TestPushSystem()
+        let push = makePush(system)
+        let updated = await push.setBadgeCount(8)
+        XCTAssertTrue(updated)
+        await push.clearBadge()
+        _ = await push.setBadgeCount(-3)
+        XCTAssertEqual(system.badges, [8, 0, 0])
+        XCTAssertEqual(system.requestCalls, 0)
+        XCTAssertEqual(system.registrations, 0)
+    }
+
     func testAnotherAccountsNotificationCannotOpenTheCurrentAccount() {
         XCTAssertFalse(PushNotifications.matchesRecipient(["recipient_user_id": "other"], userId: "me"))
         XCTAssertFalse(PushNotifications.matchesRecipient(["recipient_user_id": 42], userId: "me"))

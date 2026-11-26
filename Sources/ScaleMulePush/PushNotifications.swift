@@ -217,8 +217,20 @@ public enum PushPermission: String, Sendable {
     }
 
     public func clearBadge() async {
-        do { try await system.setBadge(0) }
-        catch { logger.error("Could not clear the notification badge") }
+        _ = await setBadgeCount(0)
+    }
+
+    /// Set the home-screen icon only. This never marks Inbox items or messages
+    /// read. Apps can clear on activation or use their own authoritative count.
+    @discardableResult
+    public func setBadgeCount(_ count: Int) async -> Bool {
+        do {
+            try await system.setBadge(max(0, count))
+            return true
+        } catch {
+            logger.error("Could not update the notification badge")
+            return false
+        }
     }
 
     /// Resume if an account-deletion attempt failed and the user remains signed in.
