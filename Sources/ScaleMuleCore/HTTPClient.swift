@@ -276,6 +276,9 @@ public actor HTTPClient {
 
         if let query = options.query {
             components.queryItems = QueryString.build(query)
+            // URLComponents permits literal + in a query. Form-style server
+            // decoders read it as a space, corrupting UTC offsets and addresses.
+            components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
         }
 
         guard let url = components.url else {
