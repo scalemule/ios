@@ -717,7 +717,7 @@ Inventory confirms receipt; this module does not itself send gift push messages.
 
 ### Durable notification Inbox and badge policy
 
-`NotificationInboxService(app:)` reads `/v1/notifications`, gets the unread
+`NotificationInboxService(app:)` reads `/v1/communication/notifications`, gets the unread
 count, and marks an individual item or the whole Inbox read using the signed-in
 session. `NotificationInboxModel` supplies published items, pagination, unread
 count, loading/error states and optional polling. Attach it with the signed-in

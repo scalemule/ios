@@ -106,7 +106,7 @@ final class NotificationInboxHTTPTests: XCTestCase {
             if request.url?.path.hasSuffix("unread-count") == true {
                 return TestFixtures.mockResponse(statusCode: 200, json: "{\"count\":3}")
             }
-            XCTAssertEqual(request.url?.path, "/v1/notifications")
+            XCTAssertEqual(request.url?.path, "/v1/communication/notifications")
             return TestFixtures.mockResponse(statusCode: 200, json: """
             {"notifications":[{"id":"\(notificationID)","kind":"admin.push","title":"世界 👋","body":"Hello","is_read":false,"created_at":"2026-11-25T18:00:00Z","data":null}],"has_more":true,"next_cursor":"2026-11-25T18:00:00Z|\(notificationID)"}
             """)
@@ -124,7 +124,7 @@ final class NotificationInboxHTTPTests: XCTestCase {
         try await app.sessionManager.setCredentials(CredentialSet(sessionToken: "user-session", sessionExpiresAt: Date().addingTimeInterval(3600)))
         MockURLProtocol.requestHandler = { request in
             XCTAssertEqual(request.httpMethod, "PATCH")
-            XCTAssertEqual(request.url?.path, "/v1/notifications/\(notificationID)/read")
+            XCTAssertEqual(request.url?.path, "/v1/communication/notifications/\(notificationID)/read")
             return TestFixtures.mockResponse(statusCode: 204, json: "")
         }
         let service = NotificationInboxService(app: app)

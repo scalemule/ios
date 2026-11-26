@@ -46,14 +46,14 @@ public final class NotificationInboxService: ServiceModule, NotificationInboxSer
     public func list(cursor: String? = nil) async -> ApiResponse<NotificationPage> {
         var query = ["limit": "30"]
         if let cursor { query["cursor"] = cursor }
-        return await client.request(RequestOptions(method: .get, path: "/v1/notifications",
+        return await client.request(RequestOptions(method: .get, path: "/v1/communication/notifications",
             query: query, credential: .sessionToken))
     }
 
     public func unreadCount() async -> ApiResponse<Int> {
         struct Count: Decodable, Sendable { let count: Int }
         let result: ApiResponse<Count> = await client.request(RequestOptions(method: .get,
-            path: "/v1/notifications/unread-count", credential: .sessionToken))
+            path: "/v1/communication/notifications/unread-count", credential: .sessionToken))
         switch result {
         case .success(let value): return .success(max(0, value.count))
         case .failure(let error): return .failure(error)
@@ -65,12 +65,12 @@ public final class NotificationInboxService: ServiceModule, NotificationInboxSer
             return .failure(ApiError(code: .unknown, message: "Invalid notification ID."))
         }
         return await mutate(RequestOptions(method: .patch,
-            path: "/v1/notifications/\(uuid.uuidString.lowercased())/read", credential: .sessionToken))
+            path: "/v1/communication/notifications/\(uuid.uuidString.lowercased())/read", credential: .sessionToken))
     }
 
     public func markAllRead() async -> ApiResponse<Void> {
         await mutate(RequestOptions(method: .patch,
-            path: "/v1/notifications/read-all", credential: .sessionToken))
+            path: "/v1/communication/notifications/read-all", credential: .sessionToken))
     }
     private func mutate(_ options: RequestOptions) async -> ApiResponse<Void> {
         switch await client.requestVoid(options) {
