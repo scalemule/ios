@@ -136,3 +136,95 @@ final class NotificationInboxHTTPTests: XCTestCase {
     }
 }
 #endif
+
+private actor PagedInboxServer: NotificationInboxServing {
+    var allRead = false
+    var failBulk = false
+    var bulkCalls = 0
+    var holdNextList = false
+    private var waiting: CheckedContinuation<ApiResponse<NotificationPage>, Never>?
+    private var heldPage: NotificationPage?
+
+    func configure(fail: Bool = false, hold: Bool = false) { failBulk = fail; holdNextList = hold }
+    func isWaiting() -> Bool { waiting != nil }
+    func release() { if let heldPage { waiting?.resume(returning: .success(heldPage)) }; waiting = nil }
+    func list(cursor: String?) async -> ApiResponse<NotificationPage> {
+        let start = cursor == nil ? 0 : 30
+        let end = min(49, start + 30)
+        let page = NotificationPage(notifications: (start..<end).map { index in
+            InboxNotification(id: String(format: "019b0000-0000-7000-8000-%012d", 100 - index),
+                kind: "admin.push", title: "Update \(index)", body: "世界 👋", actionUrl: nil, data: nil,
+                isRead: allRead, createdAt: "2026-11-25T18:00:00Z")
+        }, hasMore: end < 49, nextCursor: end < 49 ? "next" : nil)
+        if holdNextList {
+            holdNextList = false; heldPage = page
+            return await withCheckedContinuation { waiting = $0 }
+        }
+        return .success(page)
+    }
+    func unreadCount() async -> ApiResponse<Int> { .success(allRead ? 0 : 49) }
+    func markRead(id: String) async -> ApiResponse<Void> { .success(()) }
+    func markAllRead() async -> ApiResponse<Void> {
+        bulkCalls += 1
+        if failBulk { return .failure(.network("offline")) }
+        allRead = true
+        return .success(())
+    }
+}
+
+@MainActor final class NotificationInboxBulkTests: XCTestCase {
+    func testOneBulkAcknowledgementClears49IncludingUnloadedPages() async {
+        let server = PagedInboxServer(), model = NotificationInboxModel()
+        model.attach(service: server, userId: "alice")
+        await model.load()
+        XCTAssertEqual(model.items.count, 30)
+        XCTAssertEqual(model.unread, 49)
+        await model.markAllRead()
+        XCTAssertEqual(model.unread, 0)
+        XCTAssertTrue(model.items.allSatisfy(\.isRead))
+        await model.load(more: true)
+        XCTAssertEqual(model.items.count, 49)
+        XCTAssertTrue(model.items.allSatisfy(\.isRead))
+        let calls = await server.bulkCalls
+        XCTAssertEqual(calls, 1)
+        XCTAssertFalse(model.hasMore)
+    }
+
+    func testFailedBulkReadRetainsCountAndRetryClearsError() async {
+        let server = PagedInboxServer(), model = NotificationInboxModel()
+        model.attach(service: server, userId: "alice")
+        await model.load(); await server.configure(fail: true)
+        await model.markAllRead()
+        XCTAssertEqual(model.unread, 49)
+        XCTAssertNotNil(model.errorMessage)
+        XCTAssertFalse(model.isMarkingAllRead)
+        await server.configure()
+        await model.markAllRead()
+        XCTAssertEqual(model.unread, 0)
+        XCTAssertNil(model.errorMessage)
+    }
+
+    func testRefreshKeepsEarlierPagesAlreadyLoaded() async {
+        let server = PagedInboxServer(), model = NotificationInboxModel()
+        model.attach(service: server, userId: "alice")
+        await model.load(); await model.load(more: true)
+        let ids = model.items.map(\.id)
+        await model.load()
+        XCTAssertEqual(model.items.map(\.id), ids)
+        XCTAssertEqual(model.items.count, 49)
+        XCTAssertFalse(model.hasMore)
+    }
+
+    func testBulkReadDuringPageRequestCannotRestoreUnreadRows() async {
+        let server = PagedInboxServer(), model = NotificationInboxModel()
+        model.attach(service: server, userId: "alice")
+        await server.configure(hold: true)
+        let loading = Task { await model.load() }
+        while !(await server.isWaiting()) { await Task.yield() }
+        await model.markAllRead()
+        await server.release(); await loading.value
+        XCTAssertEqual(model.unread, 0)
+        XCTAssertTrue(model.items.allSatisfy(\.isRead))
+        XCTAssertEqual(model.items.count, 30)
+    }
+}

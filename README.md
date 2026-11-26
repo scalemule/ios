@@ -724,6 +724,12 @@ count, loading/error states and optional polling. Attach it with the signed-in
 user ID; reset it at sign-out. In-flight responses from an earlier account are
 ignored. Load/refresh do not mark anything read. Call `markRead(id:)` only when
 an item is viewed or its push is tapped; failures retain its unread state.
+For an Activity screen that acknowledges updates on entry, call `markAllRead()`
+once when it becomes visible (or from Mark all as read). This clears the whole
+server backlog, including unloaded pages, while retaining browsable history.
+It does not change chat read receipts. `isMarkingAllRead` supports progress UI.
+First-page refreshes retain earlier pages, and responses started before a bulk
+acknowledgement are refetched to avoid reviving stale unread rows.
 
 The OS icon and the Inbox are independent. `push.clearBadge()` sets only the
 home-screen icon to zero. `push.setBadgeCount(count)` sets an absolute,
