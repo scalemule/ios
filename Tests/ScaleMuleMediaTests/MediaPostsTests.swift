@@ -656,6 +656,89 @@ final class SocialFeedModelTests: XCTestCase {
         XCTAssertFalse(server.requests.contains { $0.hasPrefix("DELETE") })
     }
 
+    // MARK: Hide
+
+    func testHidingYourOwnPostTakesItOutAndUndoPutsItBack() async {
+        server.start { request in
+            if request.httpMethod == "GET" { return ok(page(["mine", "b"], user: "u1")) }
+            return request.url?.path.hasSuffix("/hide") == true
+                ? ok(#"{"hidden":true,"hidden_at":"2026-11-25T08:00:00Z"}"#)
+                : ok(postJSON(id: "mine", user: "u1"))
+        }
+        let model = await model()
+        await model.loadFeed()
+        let mine = model.items[0]
+        let hiding = await model.hideOwnPost(mine)
+        XCTAssertEqual(hiding?.hidden, true)
+        XCTAssertNotNil(hiding?.hiddenAt)
+        XCTAssertEqual(model.items.map(\.id), ["b"], "gone from the feed at once")
+        XCTAssertNil(model.error)
+
+        // Undo.
+        let shown = await model.unhideOwnPost(mine)
+        XCTAssertTrue(shown)
+        XCTAssertEqual(model.items.map(\.id), ["mine", "b"], "back in its place")
+        XCTAssertEqual(server.requests.filter { !$0.hasPrefix("GET") },
+                       ["POST /v1/social/posts/mine/hide", "POST /v1/social/posts/mine/unhide"],
+                       "the post only: its photo is never touched from the app")
+    }
+
+    func testAPostThatCouldNotBeHiddenStaysAndSaysWhy() async {
+        server.start { request in
+            request.httpMethod == "GET"
+                ? ok(page(["own"], user: "u1"))
+                : TestFixtures.mockResponse(statusCode: 403, json: #"{"success":false,"error":{"code":"FORBIDDEN","message":"Hiding posts is not available in this app. You can delete the post instead."}}"#)
+        }
+        let model = await model()
+        await model.loadFeed()
+        let hiding = await model.hideOwnPost(model.items[0])
+        XCTAssertNil(hiding)
+        XCTAssertEqual(model.items.map(\.id), ["own"])
+        XCTAssertEqual(model.error?.localizedDescription, "Hiding posts is not available in this app. You can delete the post instead.")
+    }
+
+    func testAnUndoThatFailedSaysWhyAndLeavesThePostHidden() async {
+        server.start { request in
+            if request.httpMethod == "GET" { return ok(page(["mine", "b"], user: "u1")) }
+            return request.url?.path.hasSuffix("/hide") == true
+                ? ok(#"{"hidden":true,"hidden_at":"2026-11-25T08:00:00Z"}"#)
+                : TestFixtures.mockResponse(statusCode: 500, json: #"{"success":false,"error":{"code":"INTERNAL_ERROR","message":"An internal error occurred"}}"#)
+        }
+        let model = await model()
+        await model.loadFeed()
+        let mine = model.items[0]
+        await model.hideOwnPost(mine)
+        let shown = await model.unhideOwnPost(mine)
+        XCTAssertFalse(shown)
+        XCTAssertEqual(model.items.map(\.id), ["b"])
+        XCTAssertEqual(model.error?.localizedDescription, "Something went wrong on our side. Please try again in a minute.")
+    }
+
+    func testSomeoneElsesPostIsNeverHidden() async {
+        server.start { _ in ok(page(["theirs"], user: "u2")) }
+        let model = await model()
+        await model.loadFeed()
+        let hiding = await model.hideOwnPost(model.items[0])
+        XCTAssertNil(hiding)
+        XCTAssertEqual(model.items.map(\.id), ["theirs"])
+        XCTAssertFalse(server.requests.contains { $0.hasPrefix("POST") })
+    }
+
+    func testWhereOnlyTheTeamRestoresADeleteOffersNoWayBack() async {
+        server.start { request in
+            request.httpMethod == "GET"
+                ? ok(page(["own"], user: "u1"))
+                : ok(#"{"deleted":true,"restorable_until":"2028-11-24T08:00:00Z","restorable_by":"team"}"#)
+        }
+        let model = await model()
+        await model.loadFeed()
+        let deletion = await model.deleteOwnPost(model.items[0])
+        XCTAssertTrue(model.items.isEmpty)
+        XCTAssertEqual(deletion?.restorableBy, .team)
+        XCTAssertEqual(deletion?.canBeRestoredByAuthor(), false)
+        XCTAssertNil(deletion?.daysToRestore(), "the kept copy is not the person's to restore")
+    }
+
     private func own(_ id: String, at created: String) throws -> MediaPost {
         let json = postJSON(id: id, user: "u1").replacingOccurrences(of: "2026-11-22T10:00:00Z", with: created)
         return try XCTUnwrap(MediaPost(post: socialPost(json), currentUserId: "u1"))

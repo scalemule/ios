@@ -436,10 +436,21 @@ feed.startPolling()                                                     // feed.
 feed.setBlockedAuthors(blockedIds); feed.hideReported(post)
 await feed.toggleLike(post); feed.likeCount(post); feed.isLiked(post)
 await feed.block(post) { await blocks.block(post.authorId, by: user.id) }
-if let deletion = await feed.deleteOwnPost(post),                      // the post only, never its photo or video
-   let days = deletion.daysToRestore() { say("Deleted. You can restore it for \(days) days.") }
+if await feed.hideOwnPost(post) != nil { say("Hidden.", undo: { await feed.unhideOwnPost(post) }) }
+if let deletion = await feed.deleteOwnPost(post) {                     // the post only, never its photo or video
+    if let days = deletion.daysToRestore() { say("Deleted. You can restore it for \(days) days.") }
+    else { say("Deleted.") }                                            // the author cannot bring it back
+}
 
-// 4b. "Recently deleted": the person's deleted posts, the days each has left, Restore.
+// 4a. "Hidden posts": the posts the person hid, Unhide and Delete.
+@StateObject var hidden = HiddenPostsModel()
+hidden.attach(social: social, currentUserId: user.id)
+hidden.onUnhidden = { feed.showRestored($0) }                           // back in the feed, in its place
+await hidden.load()                                                     // hidden.items: post, hiddenAt
+await hidden.unhide(item)                                               // gone from the list at once; back with hidden.errorMessage if refused
+await hidden.delete(item)                                               // same; the answer says whether the author can restore
+
+// 4b. "Recently deleted", for an app whose authors restore: the days each post has left, Restore.
 @StateObject var deleted = RecentlyDeletedModel()
 deleted.attach(social: social, currentUserId: user.id)
 deleted.onRestored = { feed.showRestored($0) }                          // back in the feed, in its place
@@ -504,6 +515,19 @@ let avatarURL = post.isMine ? user.avatarURL : await people.profile(post.authorI
   (`PhotosService.delete`, `VideosService.delete`): a restored post would
   come back without its picture. A deleted video's copies on this phone are
   dropped; a failure keeps the post in the feed and sets `error`.
+- Hide is not delete. `SocialService.hidePost(id:)` takes a post away from
+  everyone, its author's own page and feed included, for as long as the
+  author likes; `unhidePost(id:)` brings it back with its comments, likes,
+  photo and video, and `hiddenPosts()` lists them (most recently hidden
+  first). A hidden post has no end date. `HiddenPostsModel` is the list for a
+  screen, with Unhide and Delete (each takes the post out at once and puts it
+  back if the server refuses); `SocialFeedModel.hideOwnPost` and
+  `unhideOwnPost` are the post menu's Hide and its Undo. An app that turned
+  hiding off answers 403 with a sentence for the person.
+- Whether a deleted post can come back is the app's rule, said with every
+  delete (`PostDeletion.restorableBy`). Where it is `.team` or `.nobody` the
+  post is gone for its author: say so before asking, show no way back
+  (`daysToRestore()` is nil), and `deletedPosts()` lists nothing for them.
 - `SocialService.deletedPosts()` lists the person's deleted posts that are
   still kept, `restorePost(id:)` brings one back. `RecentlyDeletedModel` is
   the list for a screen: it follows the app's rule (`canRestore` is false
