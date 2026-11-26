@@ -11,6 +11,7 @@ let package = Package(
         .library(name: "ScaleMulePermissions", targets: ["ScaleMulePermissions"]),
         .library(name: "ScaleMulePush", targets: ["ScaleMulePush"]),
         .library(name: "ScaleMuleWorkspaces", targets: ["ScaleMuleWorkspaces"]),
+        .library(name: "ScaleMuleEntities", targets: ["ScaleMuleEntities"]),
         .library(name: "ScaleMuleSocial", targets: ["ScaleMuleSocial"]),
         .library(name: "ScaleMulePhotos", targets: ["ScaleMulePhotos"]),
         .library(name: "ScaleMuleSafety", targets: ["ScaleMuleSafety"]),
@@ -37,6 +38,7 @@ let package = Package(
         .target(name: "ScaleMulePermissions", dependencies: ["ScaleMuleCore"], path: "Sources/ScaleMulePermissions"),
         .target(name: "ScaleMulePush", dependencies: ["ScaleMuleCore"], path: "Sources/ScaleMulePush", resources: [.process("PrivacyInfo.xcprivacy")]),
         .target(name: "ScaleMuleWorkspaces", dependencies: ["ScaleMuleCore"], path: "Sources/ScaleMuleWorkspaces"),
+        .target(name: "ScaleMuleEntities", dependencies: ["ScaleMuleCore"], path: "Sources/ScaleMuleEntities"),
         .target(name: "ScaleMuleSocial", dependencies: ["ScaleMuleCore"], path: "Sources/ScaleMuleSocial"),
         .target(name: "ScaleMuleStorage", dependencies: ["ScaleMuleCore"], path: "Sources/ScaleMuleStorage", resources: [.process("PrivacyInfo.xcprivacy")]),
         .target(name: "ScaleMulePhotos", dependencies: ["ScaleMuleCore", "ScaleMuleStorage"], path: "Sources/ScaleMulePhotos", resources: [.process("PrivacyInfo.xcprivacy")]),
@@ -52,7 +54,7 @@ let package = Package(
         .target(name: "ScaleMuleRealtime", dependencies: ["ScaleMuleCore"], path: "Sources/ScaleMuleRealtime"),
         .target(name: "ScaleMuleChat", dependencies: ["ScaleMuleCore", "ScaleMuleRealtime"], path: "Sources/ScaleMuleChat"),
         .target(name: "ScaleMuleConnections", dependencies: ["ScaleMuleCore"], path: "Sources/ScaleMuleConnections"),
-        .target(name: "ScaleMule", dependencies: ["ScaleMuleCommerce", "ScaleMuleRealtime", "ScaleMuleChat", "ScaleMuleConnections", "ScaleMuleCore", "ScaleMuleAuth", "ScaleMulePermissions", "ScaleMuleWorkspaces", "ScaleMuleSocial", "ScaleMuleStorage", "ScaleMulePhotos", "ScaleMuleVideos", "ScaleMuleCapture", "ScaleMuleMediaEditing", "ScaleMuleMediaQueue", "ScaleMuleLocation", "ScaleMuleFeed", "ScaleMuleSafety", "ScaleMuleProfiles", "ScaleMuleMediaPosts", "ScaleMulePush"], path: "Sources/ScaleMule"),
+        .target(name: "ScaleMule", dependencies: ["ScaleMuleCommerce", "ScaleMuleRealtime", "ScaleMuleChat", "ScaleMuleConnections", "ScaleMuleCore", "ScaleMuleAuth", "ScaleMulePermissions", "ScaleMuleWorkspaces", "ScaleMuleEntities", "ScaleMuleSocial", "ScaleMuleStorage", "ScaleMulePhotos", "ScaleMuleVideos", "ScaleMuleCapture", "ScaleMuleMediaEditing", "ScaleMuleMediaQueue", "ScaleMuleLocation", "ScaleMuleFeed", "ScaleMuleSafety", "ScaleMuleProfiles", "ScaleMuleMediaPosts", "ScaleMulePush"], path: "Sources/ScaleMule"),
         .testTarget(name: "ScaleMulePushTests", dependencies: ["ScaleMulePush", "ScaleMuleCore", "ScaleMuleTestHelpers"], path: "Tests/ScaleMulePushTests"),
         .testTarget(name: "ScaleMuleCaptureTests", dependencies: ["ScaleMuleCapture"], path: "Tests/ScaleMuleCaptureTests"),
         .target(name: "ScaleMuleTestHelpers", dependencies: ["ScaleMuleCore"], path: "Tests/Helpers"),
@@ -69,5 +71,6 @@ let package = Package(
         .testTarget(name: "ScaleMulePhotosTests", dependencies: ["ScaleMulePhotos", "ScaleMuleStorage", "ScaleMuleCore", "ScaleMuleTestHelpers"], path: "Tests/ScaleMulePhotosTests"),
         .testTarget(name: "ScaleMuleProfilesTests", dependencies: ["ScaleMuleProfiles", "ScaleMulePhotos", "ScaleMuleAuth", "ScaleMuleStorage", "ScaleMuleCore", "ScaleMuleTestHelpers"], path: "Tests/ScaleMuleProfilesTests"),
         .testTarget(name: "ScaleMuleWorkspacesTests", dependencies: ["ScaleMuleWorkspaces", "ScaleMuleCore", "ScaleMuleTestHelpers"], path: "Tests/ScaleMuleWorkspacesTests"),
+        .testTarget(name: "ScaleMuleEntitiesTests", dependencies: ["ScaleMuleEntities", "ScaleMuleCore", "ScaleMuleTestHelpers"], path: "Tests/ScaleMuleEntitiesTests"),
     ]
 )

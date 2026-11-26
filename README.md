@@ -31,6 +31,7 @@ Or in Xcode: File > Add Package Dependencies > enter `https://github.com/scalemu
 | `ScaleMuleAuth` | Authentication (register, login, MFA, OAuth, sessions, devices) |
 | `ScaleMulePermissions` | Roles, permission checks, policies |
 | `ScaleMuleWorkspaces` | Workspace CRUD, members, invitations, SSO |
+| `ScaleMuleEntities` | Shared entities (a pet, a vehicle): things several people manage together, with roles and invitations |
 | `ScaleMuleSocial` | Posts, the app feed, likes; post locations and search near / at a venue |
 | `ScaleMuleStorage` | Uploads straight to S3: sized to the connection, multipart, retried, resumable |
 | `ScaleMulePhotos` | Photo upload (checked for unsafe content) and sized images |

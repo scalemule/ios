@@ -3,6 +3,7 @@
 @_exported import ScaleMulePermissions
 @_exported import ScaleMulePush
 @_exported import ScaleMuleWorkspaces
+@_exported import ScaleMuleEntities
 @_exported import ScaleMuleSocial
 @_exported import ScaleMuleStorage
 @_exported import ScaleMulePhotos
