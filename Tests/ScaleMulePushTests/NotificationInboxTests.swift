@@ -119,6 +119,20 @@ final class NotificationInboxHTTPTests: XCTestCase {
         XCTAssertEqual(count.data, 3)
     }
 
+    func testEarlierPagePreservesCursorTimezoneOffset() async throws {
+        let (app, _) = createTestClient()
+        let cursor = "2026-11-25T18:00:00+00:00|\(notificationID)"
+        MockURLProtocol.requestHandler = { request in
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.percentEncodedQuery!
+            let parameter = query.split(separator: "&").first { $0.hasPrefix("cursor=") }!
+            let decoded = String(parameter.dropFirst(7)).replacingOccurrences(of: "+", with: " ").removingPercentEncoding
+            XCTAssertEqual(decoded, cursor)
+            return TestFixtures.mockResponse(statusCode: 200, json: "{\"notifications\":[],\"has_more\":false}")
+        }
+        let result = await NotificationInboxService(app: app).list(cursor: cursor)
+        XCTAssertTrue(result.isSuccess)
+    }
+
     func testReadTargetsOnlyTheSpecifiedItemAndRejectsInvalidIdentifiers() async throws {
         let (app, _) = createTestClient()
         try await app.sessionManager.setCredentials(CredentialSet(sessionToken: "user-session", sessionExpiresAt: Date().addingTimeInterval(3600)))

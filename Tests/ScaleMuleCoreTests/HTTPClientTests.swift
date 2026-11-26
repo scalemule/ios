@@ -23,6 +23,27 @@ final class HTTPClientTests: XCTestCase {
         XCTAssertEqual(user?.email, "test@example.com")
     }
 
+    func testQueryValuesSurviveFormStyleDecoding() async {
+        let (app, _) = createTestClient()
+        let values = [
+            "2026-11-25T18:00:00+00:00|019b0000-0000-7000-8000-000000000011",
+            "person+alerts@example.com", "C++ & 東京 👋", "Привет + мир", "literal%2Bvalue"
+        ]
+        defer { MockURLProtocol.requestHandler = nil }
+        for value in values {
+            MockURLProtocol.requestHandler = { request in
+                let raw = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.percentEncodedQuery!
+                let encoded = String(raw.dropFirst("cursor=".count))
+                XCTAssertFalse(encoded.contains("+"))
+                XCTAssertEqual(encoded.replacingOccurrences(of: "+", with: " ").removingPercentEncoding, value)
+                return TestFixtures.envelopedResponse(json: TestFixtures.userJSON)
+            }
+            let result: ApiResponse<AuthUser> = await app.client.request(RequestOptions(
+                method: .get, path: "/v1/test", query: ["cursor": value], credential: .none))
+            XCTAssertTrue(result.isSuccess)
+        }
+    }
+
     func testErrorResponse() async {
         let (app, _) = createTestClient()
 
