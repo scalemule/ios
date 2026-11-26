@@ -86,6 +86,7 @@ public final class NotificationInboxModel: ObservableObject {
     @Published public private(set) var items: [InboxNotification] = []
     @Published public private(set) var unread = 0
     @Published public private(set) var isLoading = false
+    @Published public private(set) var isMarkingAllRead = false
     @Published public private(set) var hasLoaded = false
     @Published public private(set) var errorMessage: String?
     @Published public private(set) var hasMore = false
@@ -94,6 +95,7 @@ public final class NotificationInboxModel: ObservableObject {
     private var generation = UUID()
     private var revision = 0
     private var countRequest = 0
+    private var bulkReadRevision = 0
     private var nextCursor: String?
     private var reading: Set<String> = []
     private var acknowledged: Set<String> = []
@@ -110,19 +112,23 @@ public final class NotificationInboxModel: ObservableObject {
 
     public func reset() {
         pollTask?.cancel(); pollTask = nil
-        generation = UUID(); revision += 1
+        generation = UUID(); revision += 1; bulkReadRevision += 1
         service = nil; userId = nil
-        items = []; unread = 0; isLoading = false; hasLoaded = false
+        items = []; unread = 0; isLoading = false; isMarkingAllRead = false; hasLoaded = false
         errorMessage = nil; hasMore = false; nextCursor = nil; reading = []; acknowledged = []
     }
 
     public func load(more: Bool = false) async {
         guard let service, !isLoading, !more || (hasMore && nextCursor != nil) else { return }
-        let scope = generation
+        let scope = generation, bulkRevision = bulkReadRevision
         isLoading = true
         let result = await service.list(cursor: more ? nextCursor : nil)
         guard generation == scope else { return }
-        isLoading = false; hasLoaded = true
+        isLoading = false
+        // A page fetched before a successful bulk acknowledgement can contain
+        // stale unread flags, including items beyond the first page.
+        guard bulkRevision == bulkReadRevision else { await load(more: more); return }
+        hasLoaded = true
         switch result {
         case .success(let page):
             // Do not restore stale unread flags after a read completed in flight.
@@ -132,13 +138,22 @@ public final class NotificationInboxModel: ObservableObject {
                 if readIds.contains(item.id) { item.isRead = true }
                 return item
             }
+            let incomingIds = Set(incoming.map(\.id))
+            let older = page.hasMore && !more ? items.filter { item in
+                guard let last = incoming.last else { return false }
+                return !incomingIds.contains(item.id) &&
+                    (item.createdAt < last.createdAt || (item.createdAt == last.createdAt && item.id < last.id))
+            } : []
             if more {
                 let existing = Set(items.map(\.id))
                 items += incoming.filter { !existing.contains($0.id) }
-            } else { items = incoming }
+            } else { items = incoming + older }
             acknowledged.removeAll()
-            nextCursor = page.nextCursor
-            hasMore = page.hasMore && page.nextCursor != nil
+            // Refreshing the first page must not discard pages already browsed.
+            if older.isEmpty {
+                nextCursor = page.nextCursor
+                hasMore = page.hasMore && page.nextCursor != nil
+            }
             errorMessage = nil
         case .failure(let error): errorMessage = error.userFacingMessage
         }
@@ -177,18 +192,26 @@ public final class NotificationInboxModel: ObservableObject {
         }
     }
 
+    /// Acknowledge the entire Activity backlog, including pages not loaded yet.
+    /// Call when the app's Activity screen is opened, or from Mark all as read.
+    /// This never marks separate chat conversations read.
     public func markAllRead() async {
-        guard let service else { return }
+        guard let service, !isMarkingAllRead else { return }
         let scope = generation
-        let visibleIds = Set(items.map(\.id))
+        isMarkingAllRead = true
+        let knownIds = Set(items.map(\.id))
         let result = await service.markAllRead()
         guard generation == scope else { return }
+        isMarkingAllRead = false
         switch result {
         case .success:
-            revision += 1
+            revision += 1; bulkReadRevision += 1
+            acknowledged.formUnion(knownIds)
+            errorMessage = nil
+            unread = 0
             items = items.map { item in
                 var item = item
-                if visibleIds.contains(item.id) { item.isRead = true }
+                if knownIds.contains(item.id) { item.isRead = true }
                 return item
             }
             await refreshUnread()
