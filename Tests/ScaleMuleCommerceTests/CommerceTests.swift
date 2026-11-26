@@ -88,6 +88,64 @@ final class CommerceTests: XCTestCase {
     }
 
     @MainActor
+    func testWalletReadsAuthenticatedLedgerWithoutAppleAccount() async throws {
+        let commerce = try await signedIn()
+        for ledger in [CommerceEnvironment.production, .sandbox] {
+            MockURLProtocol.requestHandler = { request in
+                XCTAssertEqual(request.url?.path, "/v1/catalog/goods/balance")
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer buyer-session")
+                XCTAssertTrue(request.url?.query?.contains("environment=\(ledger.rawValue)") == true)
+                return TestFixtures.envelopedResponse(json: "{\"id\":\"wallet\",\"currency_code\":\"FHC\",\"available_minor\":80,\"held_minor\":0}")
+            }
+            let store = AppleGiftStore(commerce: commerce, walletEnvironment: ledger) { _ in
+                XCTFail("Reading app credits must not call Apple verification")
+                throw URLError(.userAuthenticationRequired)
+            }
+            guard case .success(let balance) = await store.balance() else { return XCTFail("Wallet did not load") }
+            XCTAssertEqual(balance.availableMinor, 80)
+            XCTAssertEqual(store.walletEnvironment, ledger)
+            XCTAssertNil(store.environment, "A read does not verify or credit an Apple purchase")
+        }
+    }
+
+    @MainActor
+    func testReceivedCollectionStartsWithoutAppleAndRetriesFailureAsRealEmpty() async throws {
+        let commerce = try await signedIn()
+        let model = ReceivedGiftsModel(commerce: commerce)
+        model.start(userID: "me", environment: .sandbox)
+        MockURLProtocol.requestHandler = { _ in throw URLError(.notConnectedToInternet) }
+        await model.refresh()
+        XCTAssertFalse(model.isLoading)
+        XCTAssertFalse(model.hasLoaded, "Failed reads are not empty collections")
+        XCTAssertNotNil(model.errorMessage)
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url?.path, "/v1/catalog/goods/gifts")
+            XCTAssertTrue(request.url?.query?.contains("environment=Sandbox") == true)
+            return TestFixtures.envelopedResponse(json: "[]")
+        }
+        await model.refresh()
+        XCTAssertFalse(model.isLoading)
+        XCTAssertTrue(model.hasLoaded)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertTrue(model.gifts.isEmpty)
+    }
+
+    func testInteractiveReadDeadlineCancelsStalledRequestAndAllowsRetry() async {
+        let start = Date()
+        let result: ApiResponse<Int> = await CommerceService.withReadDeadline(seconds: 0.03) {
+            do { try await Task.sleep(nanoseconds: 10_000_000_000) }
+            catch { return .failure(ApiError(code: .networkError, message: "Cancelled")) }
+            return .success(42)
+        }
+        guard case .failure(let error) = result else { return XCTFail("Stalled request should time out") }
+        XCTAssertEqual(error.code, .timeout)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1)
+        let retry: ApiResponse<Int> = await CommerceService.withReadDeadline { .success(42) }
+        guard case .success(let value) = retry else { return XCTFail("Retry should succeed") }
+        XCTAssertEqual(value, 42)
+    }
+
+    @MainActor
     func testMissingAppReceiptStillLoadsCreditPacksWithoutChoosingWalletEnvironment() async throws {
         let commerce = try await signedIn()
         var refreshRequests: [Bool] = []
@@ -106,17 +164,18 @@ final class CommerceTests: XCTestCase {
             throw NSError(domain: "SKInternalErrorDomain", code: 14)
         }
         await store.start()
-        XCTAssertEqual(refreshRequests, [false])
+        XCTAssertEqual(refreshRequests, [], "Opening checkout does not request an app-download receipt")
         XCTAssertEqual(contexts, ["Production", "Sandbox"])
         XCTAssertEqual(productRequests, [["credits.100"]])
-        XCTAssertTrue(store.needsAppStoreConnection)
+        XCTAssertFalse(store.needsAppStoreConnection)
         XCTAssertTrue(store.enabled)
         XCTAssertFalse(store.isLoading)
-        XCTAssertNil(store.environment, "Loading products must not infer a payment or wallet environment")
+        XCTAssertNil(store.environment, "Product loading never verifies a purchase")
+        XCTAssertEqual(store.walletEnvironment, .production)
         XCTAssertTrue(store.offers.isEmpty)
         XCTAssertFalse(store.message?.contains("SKInternalErrorDomain") == true)
         await store.connectToAppStore()
-        XCTAssertEqual(refreshRequests, [false, true], "Only an explicit action refreshes Apple's app transaction")
+        XCTAssertEqual(refreshRequests, [true], "Only a legacy explicit action refreshes Apple's app transaction")
         XCTAssertNil(store.environment)
         store.stop()
         XCTAssertFalse(store.enabled)
@@ -202,7 +261,7 @@ final class CommerceTests: XCTestCase {
         }
         for error in [CommerceError.unverified, .localStoreUnsupported] {
             let store = AppleGiftStore(commerce: commerce) { _ in throw error }
-            await store.start()
+            await store.connectToAppStore()
             XCTAssertFalse(store.enabled)
             XCTAssertNil(store.environment)
             XCTAssertTrue(store.offers.isEmpty)
@@ -251,7 +310,7 @@ final class CommerceTests: XCTestCase {
                 started.fulfill()
             }
         }
-        let initial = Task { await store.start() }
+        let initial = Task { await store.connectToAppStore() }
         await fulfillment(of: [started], timeout: 2)
         await store.start()
         XCTAssertEqual(attempts, 1)

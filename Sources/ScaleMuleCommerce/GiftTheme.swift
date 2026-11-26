@@ -37,6 +37,65 @@ extension View {
     public func giftTheme(_ theme: GiftTheme) -> some View {
         environment(\.giftTheme, theme).tint(theme.accent)
     }
+
+    /// Compact native titles leave space for the gifts, including nested sheets.
+    @ViewBuilder func giftInlineNavigation() -> some View {
+        #if os(iOS)
+        self.navigationBarTitleDisplayMode(.inline).toolbarColorScheme(.dark, for: .navigationBar)
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder func giftSheet(height: CGFloat = 480) -> some View {
+        #if os(iOS)
+        self.presentationDetents([.height(height), .large]).presentationDragIndicator(.visible)
+        #else
+        self
+        #endif
+    }
+}
+
+/// Artwork is the focus. Only the selected tile receives a background and ring.
+struct GiftTrayTile<Artwork: View>: View {
+    let name: String
+    let credits: Int64
+    var selected = false
+    @ViewBuilder var artwork: Artwork
+    @Environment(\.giftTheme) private var theme
+
+    var body: some View {
+        VStack(spacing: 5) {
+            artwork.frame(height: 62).frame(maxWidth: .infinity)
+            Text(name).font(.system(size: 12, weight: .medium)).foregroundStyle(.primary)
+                .lineLimit(1).minimumScaleFactor(0.8)
+            CreditAmount(amount: credits, font: .system(size: 11, weight: .semibold))
+        }
+        .padding(.vertical, 9).padding(.horizontal, 4)
+        .background(selected ? theme.accent.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(selected ? theme.accent : .clear, lineWidth: 1.5))
+        .contentShape(RoundedRectangle(cornerRadius: 16))
+        .accessibilityElement(children: .combine)
+    }
+}
+
+struct RechargePackTile: View {
+    let credits: Int64
+    let price: String
+    let selected: Bool
+    @Environment(\.giftTheme) private var theme
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "sparkles").foregroundStyle(theme.accent).font(.title3)
+            Text(credits.formatted()).font(.system(size: 27, weight: .bold, design: .rounded))
+            Text(price).font(.subheadline.weight(.medium)).foregroundStyle(.secondary)
+        }.frame(maxWidth: .infinity).padding(.vertical, 20)
+        .background(selected ? theme.accent.opacity(0.12) : theme.card, in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(selected ? theme.accent : Color.primary.opacity(0.08), lineWidth: 1.5))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(credits) credits for \(price)")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
 }
 
 // MARK: - Buttons
@@ -116,66 +175,6 @@ struct CreditAmount: View {
         .foregroundStyle(theme.accent)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(amount == 1 ? "1 credit" : "\(amount.formatted()) credits")
-    }
-}
-
-/// An unknown balance is distinct from both loading and a confirmed zero balance.
-enum CreditBalanceState {
-    case available(Int64)
-    case loading
-    case needsVerification
-    case unavailable
-
-    var caption: String {
-        switch self {
-        case .available: return "Use credits to send gifts."
-        case .loading: return "Fetching your credits."
-        case .needsVerification: return "Check your Apple account to load your credits."
-        case .unavailable: return "Your balance couldn’t load. Please try again."
-        }
-    }
-}
-
-/// The person's credit balance, with an optional action beside it.
-struct CreditBalanceCard<Action: View>: View {
-    let state: CreditBalanceState
-    @ViewBuilder var action: Action
-    @Environment(\.giftTheme) private var theme
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Your credits").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                switch state {
-                case .available(let credits):
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Image(systemName: "sparkles").font(.title2.weight(.semibold)).foregroundStyle(theme.accent)
-                        Text(credits.formatted())
-                            .font(.system(size: 44, weight: .bold, design: .rounded)).monospacedDigit()
-                            .minimumScaleFactor(0.6).lineLimit(1)
-                    }
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(credits == 1 ? "1 credit" : "\(credits.formatted()) credits")
-                case .loading:
-                    Text("Loading balance…").font(.headline).padding(.vertical, 6)
-                case .needsVerification, .unavailable:
-                    Text("Balance unavailable").font(.headline).padding(.vertical, 6)
-                }
-                Text(state.caption).font(.footnote).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 8)
-            action
-        }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(theme.card, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .accessibilityElement(children: .contain)
-    }
-}
-
-extension CreditBalanceCard where Action == EmptyView {
-    init(state: CreditBalanceState) {
-        self.init(state: state) { EmptyView() }
     }
 }
 

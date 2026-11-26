@@ -3,9 +3,9 @@ import CryptoKit
 import ScaleMuleCore
 
 /// Gifts other people sent to the signed-in person, and which of them the
-/// person has not been shown yet. Start it after sign-in, refresh it once the
-/// App Store environment is known and whenever the app returns to the
-/// foreground, and stop it on sign-out. What was already shown is remembered on
+/// person has not been shown yet. Start it with the wallet ledger after sign-in,
+/// refresh whenever the ledger changes or the app returns to the foreground,
+/// and stop it on sign-out. What was already shown is remembered on
 /// the device per app key, user and environment.
 @MainActor
 public final class ReceivedGiftsModel: ObservableObject {
@@ -34,9 +34,11 @@ public final class ReceivedGiftsModel: ObservableObject {
         self.defaults = defaults
     }
 
-    public func start(userID: String) {
+    public func start(userID: String, environment: CommerceEnvironment = .production) {
         stop()
         self.userID = userID
+        self.environment = environment
+        seenIDs = Set(defaults.stringArray(forKey: seenKey(userID: userID, environment: environment) + ".ids") ?? [])
     }
 
     public func stop() {
@@ -57,7 +59,7 @@ public final class ReceivedGiftsModel: ObservableObject {
     }
 
     public func refresh() async {
-        guard let environment else { return }
+        guard let environment else { errorMessage = "Sign in to see your gifts."; return }
         await refresh(environment: environment)
     }
 
@@ -181,15 +183,10 @@ public struct ReceivedGiftsView: View {
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                if !model.hasLoaded, model.errorMessage == nil {
+                if model.isLoading && !model.hasLoaded {
                     ProgressView("Loading your gifts…").frame(maxWidth: .infinity, minHeight: 160)
                 } else if model.hasLoaded, model.gifts.isEmpty {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Image(systemName: "gift").font(.system(size: 44, weight: .light))
-                        Text(model.hasMore ? "Keep exploring your gifts" : "A little appreciation. Yours to keep.").font(.title2.weight(.bold))
-                        Text(model.hasMore ? "Your recent history contains gifts you sent. Load older gifts to find the ones you received." : "When someone sends you a gift, you’ll find it here with their name and the moment it arrived.")
-                            .foregroundStyle(.secondary)
-                    }.padding(.vertical, 32)
+                    ReceivedGiftEmptyState(hasMore: model.hasMore)
                 } else if !model.gifts.isEmpty {
                     Text("From people who appreciate your moments.")
                         .font(.subheadline).foregroundStyle(.secondary)
@@ -223,12 +220,30 @@ public struct ReceivedGiftsView: View {
             }.padding(18)
         }
         .navigationTitle("Your gifts")
+        .giftInlineNavigation()
+        .task { await model.refresh() }
         .refreshable { await model.refresh() }
         .onAppear { model.markSeen() }
         .onChange(of: model.gifts.map(\.id)) { _ in model.markSeen() }
         .sheet(item: $viewed) { gift in
             GiftArrivalView(gifts: [gift], person: person, isNew: false)
         }
+    }
+}
+
+struct ReceivedGiftEmptyState: View {
+    var hasMore = false
+    @Environment(\.giftTheme) private var theme
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "gift").font(.system(size: 46, weight: .light))
+                .foregroundStyle(theme.accent).frame(width: 100, height: 100)
+                .background(theme.accent.opacity(0.08), in: Circle())
+            Text(hasMore ? "Find your earlier gifts" : "No gifts yet").font(.title2.weight(.bold))
+            Text(hasMore ? "Load older gifts to see what people sent you." : "When someone sends you a gift, it’s yours to keep. You’ll see who sent it here.")
+                .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                .frame(maxWidth: 290)
+        }.frame(maxWidth: .infinity).padding(.vertical, 48)
     }
 }
 
@@ -309,6 +324,7 @@ public struct GiftArrivalView: View {
                 }
             }
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .navigationTitle("A gift for you").giftInlineNavigation()
             .task { if let id = gifts.first?.senderID { sender = await person(id) } }
         }
     }
