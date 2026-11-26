@@ -2,8 +2,7 @@ import SwiftUI
 import AVKit
 import ScaleMuleCore
 
-/// Native gift picker. Pass the authenticated recipient's ID, never an email.
-/// The host app owns sign-in and starts/stops both stores with that session.
+/// A compact gift tray. Checkout is a separate sheet; selecting a gift never spends credits.
 public struct GiftPickerView: View {
     @ObservedObject private var store: AppleGiftStore
     @ObservedObject private var delivery: GiftDeliveryStore
@@ -13,183 +12,179 @@ public struct GiftPickerView: View {
     private let contextID: String?
     @State private var products: [GiftProduct] = []
     @State private var balance: CommerceBalance?
+    @State private var balanceEnvironment: CommerceEnvironment?
     @State private var selected: String?
     @State private var error: String?
+    @State private var balanceError: String?
     @State private var loading = true
+    @State private var loadingBalance = false
     @State private var showWallet = false
-    @State private var showDelivery = false
-    @State private var hasMore = false
     @State private var showRecipients = false
+    @State private var hasMore = false
     @State private var productCursor: String?
     @State private var catalogLoad = UUID()
+    @State private var balanceLoad = UUID()
+    @State private var sent: DigitalGift?
     @Environment(\.giftTheme) private var theme
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     public init(store: AppleGiftStore, delivery: GiftDeliveryStore, recipientID: String, recipientName: String,
                 contextType: String? = nil, contextID: String? = nil) {
-        self.store=store;self.delivery=delivery
+        self.store = store; self.delivery = delivery
         self._recipient = State(initialValue: GiftRecipient(id: recipientID, name: recipientName))
-        self.loadRecipients = nil
-        self.contextType=contextType;self.contextID=contextID
+        self.loadRecipients = nil; self.contextType = contextType; self.contextID = contextID
     }
-    /// Opens the catalog before a recipient is chosen. The host supplies real,
-    /// authorized recipients from its social graph; browsing never spends credits.
     public init(store: AppleGiftStore, delivery: GiftDeliveryStore,
                 loadRecipients: @escaping @MainActor () async throws -> [GiftRecipient]) {
-        self.store = store; self.delivery = delivery
-        self._recipient = State(initialValue: nil)
-        self.loadRecipients = loadRecipients
-        self.contextType = nil; self.contextID = nil
+        self.store = store; self.delivery = delivery; self._recipient = State(initialValue: nil)
+        self.loadRecipients = loadRecipients; self.contextType = nil; self.contextID = nil
     }
+
     public var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                if loadRecipients != nil {
-                    Button { showRecipients = true } label: { GiftRecipientRow(recipient: recipient, canChange: true) }
-                        .buttonStyle(.plain).disabled(delivery.isSending)
-                        .accessibilityIdentifier("giftChooseRecipient")
-                } else {
-                    GiftRecipientRow(recipient: recipient)
-                }
-                balanceRow
-                if let message = delivery.message { GiftNotice(text: message).accessibilityAddTraits(.updatesFrequently) }
-                if !delivery.pending.isEmpty {
-                    Button("Retry gift delivery") { Task { await delivery.retryPending(); await refreshBalance() } }
-                        .buttonStyle(GiftOutlineButtonStyle()).disabled(delivery.isSending)
-                }
-                if loading && products.isEmpty { ProgressView("Loading gifts…").frame(maxWidth: .infinity, minHeight: 200) }
-                else if let error, products.isEmpty {
-                    emptyState(title: "Gifts couldn’t load", text: error, action: "Try again")
-                }
-                else if products.isEmpty {
-                    emptyState(title: "No gifts yet", text: "There aren’t any gifts to send right now.", action: "Refresh")
-                } else {
-                    Text("Choose a gift").font(.title3.bold()).padding(.top, 6)
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 12)], spacing: 12) {
-                        ForEach(products) { product in
-                            Button { selected = product.id } label: {
-                                GiftCard(name: product.displayName, price: product.unitPriceMinor, isSelected: selected == product.id) {
-                                    GiftArtwork(url: product.artworkURL)
-                                }
-                            }.buttonStyle(.plain)
-                            .accessibilityLabel("\(product.displayName), \(product.unitPriceMinor) credits")
-                            .accessibilityAddTraits(selected == product.id ? .isSelected : [])
+        VStack(spacing: 0) {
+            recipientHeader.padding(.horizontal, 20).padding(.vertical, 12)
+            ScrollView {
+                VStack(spacing: 12) {
+                    if let sent {
+                        HStack(spacing: 10) {
+                            GiftArtwork(url: sent.productSnapshot.artworkURL).frame(width: 34, height: 34)
+                            Text("\(sent.productSnapshot.displayName) sent to \(recipient?.name ?? "your recipient")")
+                                .font(.subheadline.weight(.semibold))
+                            Spacer()
+                            Image(systemName: "checkmark.circle.fill")
+                        }.foregroundStyle(theme.accent).accessibilityAddTraits(.updatesFrequently)
+                    }
+                    if loading && products.isEmpty {
+                        ProgressView("Loading gifts…").frame(maxWidth: .infinity, minHeight: 160)
+                    } else if products.isEmpty {
+                        VStack(spacing: 12) {
+                            Image(systemName: "gift").font(.largeTitle).foregroundStyle(theme.accent)
+                            Text(error == nil ? "No gifts available yet" : "Gifts couldn’t load").font(.headline)
+                            Button("Try again") { Task { await load() } }.buttonStyle(GiftOutlineButtonStyle())
+                        }.frame(maxWidth: .infinity, minHeight: 160)
+                    } else {
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: typeSize.isAccessibilitySize ? 2 : 4), spacing: 10) {
+                            ForEach(products) { product in
+                                Button {
+                                    withAnimation(.easeOut(duration: 0.15)) { selected = product.id; sent = nil }
+                                } label: {
+                                    GiftTrayTile(name: product.displayName, credits: product.unitPriceMinor, selected: selected == product.id) {
+                                        GiftArtwork(url: product.artworkURL)
+                                    }
+                                }.buttonStyle(.plain).disabled(delivery.isSending)
+                                    .accessibilityLabel("\(product.displayName), \(product.unitPriceMinor) credits")
+                                    .accessibilityAddTraits(selected == product.id ? .isSelected : [])
+                                    .accessibilityIdentifier("giftTile-\(product.sku)")
+                            }
                         }
                     }
-                }
-                if hasMore { Button("More gifts") { Task { await moreProducts() } }.buttonStyle(GiftOutlineButtonStyle()).frame(maxWidth: .infinity) }
-                if let error, !products.isEmpty { GiftNotice(text: error, isError: true) }
-                if store.needsAppStoreConnection {
-                    Text("Browse gifts now. Apple will verify purchases when you get credits; your balance will appear once your account is verified.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                Text("Gifts are digital items. Credits and gifts cannot be exchanged for cash.").font(.footnote).foregroundStyle(.secondary)
-                    .padding(.top, 4)
-            }.padding(.horizontal, 18).padding(.vertical, 16)
-        }
-        .navigationTitle(loadRecipients == nil ? "Send a gift" : "Gift shop")
-        .safeAreaInset(edge: .bottom) { sendControls }
-        .task { await load() }
-        .onChange(of: store.fulfillmentRevision) { _ in Task { await refreshBalance() } }
-        .onChange(of: store.environment) { _ in balance = nil; selected = nil; Task { await load() } }
-        .onChange(of: delivery.lastDelivered?.id) { _ in
-            if let recipient, delivery.lastDelivered?.recipientID == recipient.id { showDelivery = true }
-        }
-        .sheet(isPresented: $showDelivery) {
-            if let gift = delivery.lastDelivered { GiftPresentationView(gift: gift.productSnapshot, title: "Gift sent to \(recipient?.name ?? "recipient")", message: "Delivered. You spent \(gift.totalMinor) credits.") }
-        }
-        .sheet(isPresented: $showWallet) { NavigationStack { CommerceWalletView(store: store) } }
-        .sheet(isPresented: $showRecipients) {
-            if let loadRecipients {
-                GiftRecipientPicker(load: loadRecipients) { recipient = $0 }
+                    if hasMore { Button("More gifts") { Task { await moreProducts() } }.buttonStyle(GiftOutlineButtonStyle()) }
+                    if let error, !products.isEmpty { GiftNotice(text: error, isError: true) }
+                    if let message = delivery.message, sent == nil { GiftNotice(text: message) }
+                    if !delivery.pending.isEmpty {
+                        Button("Retry delivery") { Task { await delivery.retryPending(); await refreshBalance() } }
+                            .buttonStyle(GiftOutlineButtonStyle()).disabled(delivery.isSending)
+                    }
+                }.padding(.horizontal, 14).padding(.bottom, 12)
             }
         }
+        .navigationTitle("Send a gift").giftInlineNavigation()
+        .safeAreaInset(edge: .bottom, spacing: 0) { footer }
+        .task { async let wallet: Void = refreshBalance(); await load(); await wallet }
+        .onChange(of: store.fulfillmentRevision) { _ in Task { await refreshBalance() } }
+        .onChange(of: store.walletEnvironment) { _ in
+            balance = nil
+            Task { async let wallet: Void = refreshBalance(); await load(); await wallet }
+        }
+        .onChange(of: delivery.lastDelivered?.id) { _ in
+            if delivery.lastDelivered?.recipientID == recipient?.id { sent = delivery.lastDelivered }
+        }
+        .sheet(isPresented: $showWallet, onDismiss: { Task { await refreshBalance() } }) {
+            NavigationStack { CommerceWalletView(store: store) }.giftSheet()
+        }
+        .sheet(isPresented: $showRecipients) {
+            if let loadRecipients { GiftRecipientPicker(load: loadRecipients) { recipient = $0; sent = nil } }
+        }
     }
-    /// The balance and the way to get more, in one row.
-    private var balanceRow: some View {
+
+    private var recipientHeader: some View {
         HStack(spacing: 10) {
-            if let balance { CreditAmount(amount: balance.availableMinor, font: .title3.weight(.bold)) }
-            Text(balance == nil ? "Your credits" : (balance?.availableMinor == 1 ? "credit" : "credits"))
-                .font(.subheadline).foregroundStyle(.secondary)
-            Spacer(minLength: 8)
-            Button("Get credits") { showWallet = true }.buttonStyle(GiftOutlineButtonStyle())
-                .accessibilityIdentifier("giftGetCredits")
-        }
-        .padding(.vertical, 12).padding(.horizontal, 14)
-        .background(theme.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-    }
-    private func emptyState(title: String, text: String, action: String) -> some View {
-        VStack(spacing: 10) {
-            Image(systemName: "gift").font(.system(size: 40)).foregroundStyle(.secondary)
-            Text(title).font(.title3.bold())
-            Text(text).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
-            Button(action) { Task { await load() } }.buttonStyle(GiftOutlineButtonStyle()).padding(.top, 4)
-        }.frame(maxWidth: .infinity).padding(.vertical, 36)
-    }
-    @ViewBuilder private var sendControls: some View {
-        if let product = products.first(where: { $0.id == selected }) {
-            let missing = product.unitPriceMinor - (balance?.availableMinor ?? 0)
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 12) {
-                    GiftArtwork(url: product.artworkURL).frame(width: 48, height: 48)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(product.displayName).font(.headline)
-                        Text(product.description).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
+            GiftPersonAvatar(person: recipient).frame(width: 32, height: 32)
+            if loadRecipients != nil {
+                Button { showRecipients = true } label: {
+                    HStack(spacing: 6) {
+                        Text(recipient.map { "To \($0.name)" } ?? "Choose a person").font(.headline)
+                        Image(systemName: "chevron.down").font(.caption.weight(.semibold))
                     }
-                    Spacer(minLength: 8)
-                    CreditAmount(amount: product.unitPriceMinor, font: .headline)
-                }
-                if let recipient {
-                    if store.environment == nil {
-                        Text("Continue with Apple to get credits or verify your existing balance.")
-                            .font(.footnote).foregroundStyle(.secondary)
-                        Button("Continue with Apple") { showWallet = true }.buttonStyle(GiftPrimaryButtonStyle())
-                    } else if balance == nil {
-                        GiftNotice(text: "Your credit balance couldn’t load. Try again before sending.", isError: true)
-                        Button("Reload balance") { Task { await refreshBalance() } }.buttonStyle(GiftPrimaryButtonStyle())
-                    } else if missing > 0 {
-                        Text(missing == 1 ? "You need 1 more credit to send this." : "You need \(missing) more credits to send this.")
-                            .font(.footnote).foregroundStyle(.secondary)
-                        Button("Get credits") { showWallet = true }.buttonStyle(GiftPrimaryButtonStyle())
-                            .accessibilityIdentifier("giftGetMoreCredits")
-                    } else {
-                        Button {
-                            guard let environment = store.environment else { return }
-                            Task {
-                                await delivery.send(product: product, recipientID: recipient.id, environment: environment,
-                                                    contextType: contextType, contextID: contextID)
-                                await refreshBalance()
-                            }
-                        } label: {
-                            HStack(spacing: 8) {
-                                if delivery.isSending { ProgressView().tint(theme.onAccent) }
-                                Text(delivery.isSending ? "Sending…" : "Send to \(recipient.name)")
-                            }
-                        }.buttonStyle(GiftPrimaryButtonStyle())
-                            .accessibilityIdentifier("giftConfirmSend")
-                            .accessibilityLabel("Send \(product.displayName) to \(recipient.name) for \(product.unitPriceMinor) credits")
-                            .disabled(delivery.isSending || store.environment == nil || balance == nil)
-                    }
-                } else {
-                    Button("Choose who gets it") { showRecipients = true }.buttonStyle(GiftPrimaryButtonStyle())
-                }
-            }.padding(16).frame(maxWidth: .infinity).background(.regularMaterial)
+                }.buttonStyle(.plain).disabled(delivery.isSending).accessibilityIdentifier("giftChooseRecipient")
+            } else { Text("To \(recipient?.name ?? "your recipient")").font(.headline) }
+            Spacer(minLength: 0)
         }
+    }
+    private var selectedProduct: GiftProduct? { products.first { $0.id == selected } }
+    private var needsCredits: Bool {
+        guard let product = selectedProduct, let balance else { return false }
+        return balance.availableMinor < product.unitPriceMinor
+    }
+    private var footer: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let balanceError {
+                HStack {
+                    Text("Credits couldn’t load.").font(.footnote).foregroundStyle(.secondary)
+                    Button("Retry") { Task { await refreshBalance() } }.font(.footnote.weight(.semibold))
+                }.accessibilityHint(balanceError)
+            }
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    if let balance { CreditAmount(amount: balance.availableMinor, font: .subheadline.bold()) }
+                    else { Text(loadingBalance ? "Loading credits…" : "Credits").font(.caption).foregroundStyle(.secondary) }
+                    Button("Recharge") { showWallet = true }.font(.subheadline.weight(.semibold))
+                        .accessibilityIdentifier("giftGetCredits")
+                }
+                Spacer(minLength: 8)
+                Button { Task { await sendSelected() } } label: {
+                    HStack(spacing: 6) {
+                        if delivery.isSending || loadingBalance { ProgressView().tint(theme.onAccent) }
+                        Text(delivery.isSending ? "Sending…" : (recipient == nil ? "Choose person" : (needsCredits ? "Recharge" : "Send")))
+                        if let product = selectedProduct, !delivery.isSending, !needsCredits, recipient != nil {
+                            Text("· \(product.unitPriceMinor)").monospacedDigit()
+                        }
+                    }
+                }.buttonStyle(GiftPillButtonStyle())
+                    .disabled(selectedProduct == nil || delivery.isSending || loadingBalance)
+                    .accessibilityIdentifier("giftConfirmSend")
+                    .accessibilityLabel(selectedProduct.map { "\(needsCredits ? "Recharge to send" : "Send") \($0.displayName), \($0.unitPriceMinor) credits" } ?? "Choose a gift")
+            }
+        }.padding(.horizontal, 20).padding(.vertical, 14).background(.regularMaterial)
+    }
+    private func sendSelected() async {
+        guard let product = selectedProduct, !delivery.isSending else { return }
+        guard let recipient else { showRecipients = true; return }
+        if balance == nil || balanceEnvironment != store.walletEnvironment { await refreshBalance() }
+        guard let balance, balanceEnvironment == store.walletEnvironment else { return }
+        guard balance.availableMinor >= product.unitPriceMinor else { showWallet = true; return }
+        await delivery.send(product: product, recipientID: recipient.id, environment: store.walletEnvironment,
+                            contextType: contextType, contextID: contextID)
+        await refreshBalance()
     }
     private func load() async {
-        let run = UUID(); catalogLoad = run
-        loading = true; error = nil
+        let run = UUID(); catalogLoad = run; loading = true; error = nil
         defer { if catalogLoad == run { loading = false } }
         let browsing = store.catalogEnvironment
         let items = await store.catalogProducts()
         guard catalogLoad == run, store.catalogEnvironment == browsing, !Task.isCancelled else { return }
-        switch items { case .success(let value): productCursor = value.last?.id; products = ordered(value); hasMore = value.count == 30; case .failure(let failure): error = failure.message }
-        await refreshBalance()
+        switch items {
+        case .success(let value):
+            productCursor = value.last?.id; products = ordered(value); hasMore = value.count == 30
+            if !products.contains(where: { $0.id == selected }) { selected = nil }
+        case .failure(let failure): error = failure.message
+        }
     }
     private func moreProducts() async {
         guard let cursor = productCursor else { return }
         let run = catalogLoad; let browsing = store.catalogEnvironment
         let response = await store.catalogProducts(before: cursor)
-        guard run == catalogLoad, store.catalogEnvironment == browsing, !Task.isCancelled else { return }
+        guard run == catalogLoad, store.catalogEnvironment == browsing, productCursor == cursor, !Task.isCancelled else { return }
         switch response {
         case .success(let next):
             productCursor = next.last?.id
@@ -202,158 +197,97 @@ public struct GiftPickerView: View {
         items.sorted { $0.unitPriceMinor == $1.unitPriceMinor ? $0.id < $1.id : $0.unitPriceMinor < $1.unitPriceMinor }
     }
     private func refreshBalance() async {
-        guard let environment = store.environment else { balance = nil; return }
-        let response = await store.commerce.balance(environment: environment)
-        guard store.environment == environment, !Task.isCancelled else { return }
-        switch response { case .success(let value): balance = value; case .failure: balance = nil }
+        let run = UUID(); balanceLoad = run; loadingBalance = true
+        defer { if balanceLoad == run { loadingBalance = false } }
+        let environment = store.walletEnvironment
+        let response = await store.balance()
+        guard balanceLoad == run, store.walletEnvironment == environment, !Task.isCancelled else { return }
+        switch response {
+        case .success(let value): balance = value; balanceEnvironment = environment; balanceError = nil
+        case .failure(let failure): balance = nil; balanceEnvironment = nil; balanceError = failure.message
+        }
     }
 }
 
+/// Recharge is deliberately focused: choose a pack, confirm with Apple, return
+/// to the selected gift. Received gifts live in ReceivedGiftsView.
 public struct CommerceWalletView: View {
     @ObservedObject private var store: AppleGiftStore
-    @State private var inventory: [GiftInventoryItem] = []
-    @State private var viewedGift: GiftInventoryItem?
-    @State private var hasMore = false
     @State private var balance: CommerceBalance?
-    @State private var isRefreshing = false
-    @State private var refreshID = UUID()
-    @State private var hasLoadedInventory = false
-    @State private var balanceError: String?
-    @State private var inventoryError: String?
-    @State private var error: String?
-    @State private var buying: String?
+    @State private var selected: String?
+    @State private var balanceError = false
+    @State private var balanceLoad = UUID()
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var typeSize
     public init(store: AppleGiftStore) { self.store = store }
     public var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                CreditBalanceCard(state: balanceState)
-                if let balanceError {
-                    GiftNotice(text: balanceError, isError: true)
-                    Button("Retry balance") { Task { await refresh() } }
-                        .buttonStyle(GiftOutlineButtonStyle()).disabled(isRefreshing)
-                }
-                if store.needsAppStoreConnection {
-                    Button { Task { await store.connectToAppStore(); await refresh() } } label: {
-                        HStack(spacing: 8) {
-                            if store.isLoading { ProgressView() }
-                            Text(store.isLoading ? "Checking Apple account…" : "Check Apple account")
-                        }
+            VStack(alignment: .leading, spacing: 22) {
+                HStack(spacing: 8) {
+                    Text("Your credits").font(.subheadline).foregroundStyle(.secondary)
+                    Spacer()
+                    if let balance { CreditAmount(amount: balance.availableMinor, font: .title3.bold()) }
+                    else if balanceError {
+                        Button("Refresh") { Task { await refresh() } }.font(.subheadline.weight(.semibold))
                     }
-                    .buttonStyle(GiftOutlineButtonStyle())
-                    .disabled(store.isLoading || store.isPurchasing)
-                    .accessibilityIdentifier("commerceConnectAppStore")
                 }
-                Text("Get credits").font(.title3.bold()).padding(.top, 10)
-                if store.isLoading && store.offers.isEmpty { ProgressView("Loading credit packs…").frame(maxWidth: .infinity, minHeight: 80) }
-                ForEach(store.offers) { offer in
-                    CreditPackRow(credits: offer.pack.creditsPerUnit, name: offer.pack.displayName, price: offer.displayPrice,
-                                  isBuying: buying == offer.id) {
-                        Task { buying = offer.id; await store.purchase(offer); buying = nil }
+                Text("A little appreciation goes a long way.").font(.title3.weight(.semibold))
+                if store.isLoading && store.offers.isEmpty { ProgressView("Loading credit packs…").frame(maxWidth: .infinity, minHeight: 100) }
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: typeSize.isAccessibilitySize ? 1 : 3), spacing: 10) {
+                    ForEach(store.offers) { offer in
+                        Button { selected = offer.id } label: {
+                            RechargePackTile(credits: offer.pack.creditsPerUnit, price: offer.displayPrice, selected: selected == offer.id)
+                        }.buttonStyle(.plain).disabled(store.isPurchasing)
                     }
-                    .disabled(store.isLoading || store.isPurchasing || !store.enabled)
                 }
-                if store.offers.isEmpty && !store.isLoading && store.message == nil {
-                    Text("Credit packs are not available yet.").font(.subheadline).foregroundStyle(.secondary)
+                if store.offers.isEmpty && !store.isLoading {
+                    Text("Credit packs couldn’t load.").font(.subheadline).foregroundStyle(.secondary)
+                    Button("Try again") { Task { await store.start() } }.buttonStyle(GiftOutlineButtonStyle())
                 }
                 if let message = store.message { GiftNotice(text: message) }
-                if store.needsAppStoreConnection {
-                    Text("Choose a credit pack to continue with Apple.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                } else if store.offers.isEmpty && !store.isLoading {
-                    Button("Reload credit packs") { Task { await store.start(); await refresh() } }
-                        .buttonStyle(GiftOutlineButtonStyle())
-                        .disabled(store.isPurchasing)
-                }
-                Text("Your gifts").font(.title3.bold()).padding(.top, 14)
-                if inventory.isEmpty {
-                    if store.environment == nil {
-                        Text("Check your Apple account to see your received gifts.").font(.subheadline).foregroundStyle(.secondary)
-                    } else if isRefreshing {
-                        ProgressView("Loading your gifts…")
-                    } else if hasLoadedInventory && inventoryError == nil {
-                        Text("Gifts people send you will appear here.").font(.subheadline).foregroundStyle(.secondary)
-                    }
-                } else {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 12)], spacing: 12) {
-                        ForEach(inventory) { item in
-                            Button { viewedGift = item } label: {
-                                GiftCard(name: item.productSnapshot.displayName, count: item.availableQuantity) {
-                                    GiftArtwork(url: item.productSnapshot.artworkURL)
-                                }
-                            }.buttonStyle(.plain)
-                            .accessibilityLabel("\(item.productSnapshot.displayName), \(item.availableQuantity) owned")
-                        }
-                    }
-                }
-                if let inventoryError {
-                    GiftNotice(text: inventoryError, isError: true)
-                    Button("Retry gifts") { Task { await refresh() } }
-                        .buttonStyle(GiftOutlineButtonStyle()).disabled(isRefreshing)
-                }
-                if hasMore { Button("More gifts") { Task { await moreInventory() } }.buttonStyle(GiftOutlineButtonStyle()).frame(maxWidth: .infinity) }
-                if let error { GiftNotice(text: error, isError: true) }
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Payments are handled by Apple. Credits do not expire and cannot be transferred or withdrawn as cash.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    Button("Missing a purchase? Check again") { Task { await store.retryUnfinished(); await refresh() } }
-                        .font(.footnote.weight(.semibold))
-                        .disabled(store.isLoading || store.isPurchasing || store.environment == nil)
-                        .accessibilityIdentifier("commerceCheckPending")
-                }.padding(.top, 14)
-            }.padding(.horizontal, 18).padding(.vertical, 16)
-        }.navigationTitle("Credits & gifts")
+                Text("Credits never expire. Gifts are digital items and can’t be exchanged for cash.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Button("Missing a purchase? Restore credits") { Task { await store.retryUnfinished(); await refresh() } }
+                    .font(.footnote.weight(.semibold)).disabled(store.isLoading || store.isPurchasing)
+                    .accessibilityIdentifier("commerceCheckPending")
+            }.padding(20)
+        }
+        .navigationTitle("Recharge").giftInlineNavigation()
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
-        .task { if store.environment == nil && !store.isLoading && !store.needsAppStoreConnection { await store.start() }; await refresh() }
-        .onChange(of: store.fulfillmentRevision) { _ in Task { await refresh() } }
-        .onChange(of: store.environment) { _ in
-            refreshID = UUID(); isRefreshing = false
-            balance = nil; inventory = []; hasMore = false; hasLoadedInventory = false
-            balanceError = nil; inventoryError = nil; error = nil
-            Task { await refresh() }
+        .safeAreaInset(edge: .bottom) {
+            VStack(spacing: 8) {
+                Button {
+                    guard let offer = store.offers.first(where: { $0.id == selected }) else { return }
+                    Task { if await store.purchase(offer) { dismiss() } }
+                } label: {
+                    HStack(spacing: 8) {
+                        if store.isPurchasing { ProgressView() }
+                        Text(store.isPurchasing ? "Confirming…" : "Recharge\(selectedOffer.map { " · \($0.displayPrice)" } ?? "")")
+                    }
+                }.buttonStyle(GiftPrimaryButtonStyle())
+                    .disabled(selectedOffer == nil || store.isLoading || store.isPurchasing || !store.enabled)
+                    .accessibilityIdentifier("commerceRecharge")
+                Text("Secure payment with Apple").font(.caption).foregroundStyle(.secondary)
+            }.padding(.horizontal, 20).padding(.vertical, 12).background(.regularMaterial)
         }
-        .sheet(item: $viewedGift) { item in GiftPresentationView(gift: item.productSnapshot, title: "Your gift") }
-    }
-    private var balanceState: CreditBalanceState {
-        if let balance { return .available(balance.availableMinor) }
-        if isRefreshing || (store.environment == nil && store.isLoading) { return .loading }
-        if store.environment == nil { return .needsVerification }
-        return .unavailable
-    }
-    private func moreInventory() async {
-        guard let environment = store.environment, let last = inventory.last else { return }
-        let requestID = refreshID
-        let response = await store.commerce.inventory(environment: environment, before: last.id)
-        guard refreshID == requestID, store.environment == environment,
-              inventory.last?.id == last.id, !Task.isCancelled else { return }
-        switch response {
-        case .success(let next): inventory += next; hasMore = next.count == 30
-        case .failure(let failure): error = failure.message
+        .task {
+            async let wallet: Void = refresh()
+            if store.offers.isEmpty && !store.isLoading { await store.start() }
+            await wallet
+            if selected == nil { selected = store.offers.first?.id }
         }
+        .onChange(of: store.offers.map(\.id)) { _ in if selectedOffer == nil { selected = store.offers.first?.id } }
+        .onChange(of: store.walletEnvironment) { _ in balance = nil; Task { await refresh() } }
     }
+    private var selectedOffer: StoreCreditOffer? { store.offers.first { $0.id == selected } }
     private func refresh() async {
-        let requestID = UUID()
-        refreshID = requestID
-        guard let environment = store.environment else {
-            balance = nil; inventory = []; hasMore = false; hasLoadedInventory = false
-            balanceError = nil; inventoryError = nil; error = nil; isRefreshing = false
-            return
-        }
-        isRefreshing = true
-        defer { if refreshID == requestID { isRefreshing = false } }
-        async let wallet = store.commerce.balance(environment: environment)
-        async let owned = store.commerce.inventory(environment: environment)
-        let (walletResult, ownedResult) = await (wallet, owned)
-        guard refreshID == requestID, store.environment == environment, !Task.isCancelled else { return }
-        error = nil
-        switch walletResult {
-        case .success(let value): balance = value; balanceError = nil
-        case .failure(let failure): balance = nil; balanceError = failure.message
-        }
-        switch ownedResult {
-        case .success(let value):
-            inventory = value; hasMore = value.count == 30; hasLoadedInventory = true; inventoryError = nil
-        case .failure(let failure): inventoryError = failure.message
+        let run = UUID(); balanceLoad = run
+        let environment = store.walletEnvironment
+        let response = await store.balance()
+        guard balanceLoad == run, store.walletEnvironment == environment, !Task.isCancelled else { return }
+        switch response {
+        case .success(let value): balance = value; balanceError = false
+        case .failure: balance = nil; balanceError = true
         }
     }
 }

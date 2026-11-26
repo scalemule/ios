@@ -41,67 +41,48 @@ final class GiftScreenSnapshots: XCTestCase {
     }
 
     func testWallet() throws {
-        try write("wallet", height: 780) {
-            VStack(alignment: .leading, spacing: 14) {
-                CreditBalanceCard(state: .available(80))
-                Text("Get credits").font(.title3.bold()).padding(.top, 10)
-                CreditPackRow(credits: 100, name: "100 Firehosy Credits", price: "$0.99") {}
-                CreditPackRow(credits: 300, name: "300 Firehosy Credits", price: "$2.99") {}
-                CreditPackRow(credits: 500, name: "Best value", price: "$4.99") {}
-                Text("Your gifts").font(.title3.bold()).padding(.top, 14)
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 12)], spacing: 12) {
-                    GiftCard(name: "Coffee") { art("coffee") }
-                    GiftCard(name: "Rose", count: 3) { art("rose") }
+        try write("recharge", height: 480) {
+            VStack(alignment: .leading, spacing: 22) {
+                HStack { Text("Recharge").font(.headline); Spacer(); Text("Done").foregroundStyle(theme.accent) }
+                HStack { Text("Your credits").foregroundStyle(.secondary); Spacer(); CreditAmount(amount: 80) }
+                Text("A little appreciation goes a long way.").font(.title3.weight(.semibold))
+                HStack(spacing: 10) {
+                    RechargePackTile(credits: 100, price: "$0.99", selected: true)
+                    RechargePackTile(credits: 300, price: "$2.99", selected: false)
+                    RechargePackTile(credits: 500, price: "$4.99", selected: false)
                 }
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Payments are handled by Apple. Credits do not expire and cannot be transferred or withdrawn as cash.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    Button("Missing a purchase? Check again") {}.font(.footnote.weight(.semibold))
-                }.padding(.top, 14)
-            }.padding(.horizontal, 18).padding(.vertical, 16)
+                Text("Credits never expire. Gifts are digital items and can’t be exchanged for cash.").font(.footnote).foregroundStyle(.secondary)
+                Button("Recharge · $0.99") {}.buttonStyle(GiftPrimaryButtonStyle())
+                Text("Secure payment with Apple").font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity)
+            }.padding(20)
         }
     }
 
     func testShop() throws {
-        try write("shop", height: 800) {
-            VStack(spacing: 0) {
-                VStack(alignment: .leading, spacing: 16) {
-                    GiftRecipientRow(recipient: GiftRecipient(id: "1", name: "Maya"), canChange: true)
-                    HStack(spacing: 10) {
-                        CreditAmount(amount: 80, font: .title3.weight(.bold))
-                        Text("credits").font(.subheadline).foregroundStyle(.secondary)
-                        Spacer(minLength: 8)
-                        Button("Get credits") {}.buttonStyle(GiftOutlineButtonStyle())
+        let gifts: [(String, String, Int64)] = [("rose", "Rose", 10), ("coffee", "Coffee", 20), ("ice-cream", "Ice Cream", 25), ("heart", "Heart", 30), ("fire", "Fire", 50), ("star", "Star", 50), ("camera", "Nice Shot", 75), ("camel", "Camel", 100), ("rocket", "Rocket", 150), ("globe", "The World", 200)]
+        try write("gift-tray", height: 540) {
+            VStack(spacing: 14) {
+                HStack { Text("Send a gift").font(.headline); Spacer(); Text("Close").foregroundStyle(theme.accent) }
+                HStack(spacing: 10) {
+                    GiftPersonAvatar(person: GiftRecipient(id: "1", name: "Maya")).frame(width: 32, height: 32)
+                    Text("To Maya").font(.headline); Spacer()
+                }
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4), spacing: 10) {
+                    ForEach(gifts, id: \.0) { gift in
+                        GiftTrayTile(name: gift.1, credits: gift.2, selected: gift.0 == "coffee") { self.art(gift.0) }
                     }
-                    .padding(.vertical, 12).padding(.horizontal, 14)
-                    .background(theme.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    Text("Choose a gift").font(.title3.bold()).padding(.top, 6)
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 12)], spacing: 12) {
-                        GiftCard(name: "Rose", price: 10) { art("rose") }
-                        GiftCard(name: "Coffee", price: 20, isSelected: true) { art("coffee") }
-                        GiftCard(name: "Ice Cream", price: 25) { art("ice-cream") }
-                        GiftCard(name: "Heart", price: 30) { art("heart") }
-                        GiftCard(name: "Fire", price: 50) { art("fire") }
-                        GiftCard(name: "Nice Shot", price: 75) { art("camera") }
+                }
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        CreditAmount(amount: 80)
+                        Text("Recharge").font(.subheadline.weight(.semibold)).foregroundStyle(theme.accent)
                     }
-                }.padding(.horizontal, 18).padding(.vertical, 16)
-                Spacer(minLength: 0)
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack(spacing: 12) {
-                        art("coffee").frame(width: 48, height: 48)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Coffee").font(.headline)
-                            Text("Thanks for making my day.").font(.footnote).foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 8)
-                        CreditAmount(amount: 20, font: .headline)
-                    }
-                    Button("Send to Maya") {}.buttonStyle(GiftPrimaryButtonStyle())
-                }.padding(16).background(Color.white.opacity(0.1))
-            }
+                    Spacer()
+                    Button("Send · 20") {}.buttonStyle(GiftPillButtonStyle())
+                }
+            }.padding(18)
         }
     }
-
 
     private func received(_ slug: String, name: String) throws -> DigitalGift {
         let url = "https://example.com/\(slug).png"
@@ -137,27 +118,19 @@ final class GiftScreenSnapshots: XCTestCase {
     }
 
     func testStates() throws {
-        try write("states", height: 520) {
-            VStack(alignment: .leading, spacing: 14) {
-                GiftRecipientRow(recipient: nil, canChange: true)
-                GiftNotice(text: "Your purchase is still being confirmed. Credits will appear shortly.")
-                GiftNotice(text: "Gifts couldn’t load. Check your connection.", isError: true)
-                Button("Check Apple account") {}.buttonStyle(GiftPrimaryButtonStyle())
-                Button("Get credits") {}.buttonStyle(GiftPrimaryButtonStyle()).disabled(true)
-                HStack { Button("Try again") {}.buttonStyle(GiftOutlineButtonStyle()); Button("$4.99") {}.buttonStyle(GiftPillButtonStyle()) }
-                CreditBalanceCard(state: .needsVerification)
-            }.padding(18)
+        try write("empty-collection", height: 450) {
+            VStack {
+                HStack { Text("Your gifts").font(.headline); Spacer(); Text("Done").foregroundStyle(theme.accent) }.padding(20)
+                ReceivedGiftEmptyState()
+            }
         }
-        try write("wallet-balance-states", height: 800) {
-            VStack(alignment: .leading, spacing: 18) {
-                CreditBalanceCard(state: .needsVerification)
-                Button("Check Apple account") {}.buttonStyle(GiftOutlineButtonStyle())
-                CreditBalanceCard(state: .loading)
-                CreditBalanceCard(state: .unavailable)
-                Button("Retry balance") {}.buttonStyle(GiftOutlineButtonStyle())
-                CreditBalanceCard(state: .available(0))
-                CreditBalanceCard(state: .available(12345))
-            }.padding(18)
+        try write("delivery-retry", height: 300) {
+            VStack(alignment: .leading, spacing: 16) {
+                GiftNotice(text: "Your gift is saved. Retry delivery when you’re back online.")
+                Button("Retry delivery") {}.buttonStyle(GiftOutlineButtonStyle())
+                Text("Credits couldn’t load.").font(.footnote).foregroundStyle(.secondary)
+                Button("Retry") {}.buttonStyle(GiftOutlineButtonStyle())
+            }.padding(20)
         }
     }
 }
