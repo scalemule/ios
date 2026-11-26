@@ -26,16 +26,18 @@ public final class PushService: ServiceModule, @unchecked Sendable {
     }
 
     public func register(deviceToken: Data, userId: String, appVersion: String? = nil,
-                         osVersion: String? = nil) async -> ApiResponse<PushRegistration> {
+                         osVersion: String? = nil, timeZone: String = TimeZone.autoupdatingCurrent.identifier,
+                         defaultQuietHours: PushQuietHours? = nil) async -> ApiResponse<PushRegistration> {
         guard let session = await client.sessionManager.sessionToken else {
             return .failure(ApiError(code: .unauthorized, message: "Sign in to enable notifications.", statusCode: 401))
         }
         return await register(deviceToken: deviceToken, userId: userId, session: session,
-                              appVersion: appVersion, osVersion: osVersion)
+                              appVersion: appVersion, osVersion: osVersion, timeZone: timeZone, defaultQuietHours: defaultQuietHours)
     }
 
     func register(deviceToken: Data, userId: String, session: String, appVersion: String?,
-                  osVersion: String?) async -> ApiResponse<PushRegistration> {
+                  osVersion: String?, timeZone: String = TimeZone.autoupdatingCurrent.identifier,
+                  defaultQuietHours: PushQuietHours? = nil) async -> ApiResponse<PushRegistration> {
         guard !deviceToken.isEmpty else {
             return .failure(ApiError(code: .unknown, message: "Apple returned an empty device token."))
         }
@@ -48,6 +50,13 @@ public final class PushService: ServiceModule, @unchecked Sendable {
             "registration_source": "scalemule-ios"]
         if let appVersion { body["app_version"] = appVersion }
         if let osVersion { body["os_version"] = osVersion }
+        body["timezone"] = timeZone
+        if let schedule = defaultQuietHours {
+            guard schedule.isValid, schedule.enabled, schedule.followsDevice else {
+                return .failure(ApiError(code: .unknown, message: "Invalid default quiet hours."))
+            }
+            body["quiet_hours_defaults"] = ["start": schedule.start, "end": schedule.end]
+        }
         let result: ApiResponse<PushRegistration> = await client.request(RequestOptions(method: .post, path: "/v1/communication/push/register",
             body: body, credential: .none, retryable: false, headers: ["Authorization": "Bearer \(session)"]))
         if case .success(let registration) = result,

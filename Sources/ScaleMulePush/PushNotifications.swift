@@ -48,6 +48,14 @@ public enum PushPermission: String, Sendable {
     @Published public private(set) var isRegistered = false
     @Published public private(set) var isWorking = false
     @Published public private(set) var lastError: String?
+    @Published public private(set) var quietHours: PushQuietHours?
+    @Published public private(set) var isLoadingQuietHours = false
+    @Published public private(set) var isSavingQuietHours = false
+    @Published public private(set) var quietHoursError: String?
+    @Published public private(set) var deviceTimeZoneIdentifier = TimeZone.autoupdatingCurrent.identifier
+    private let defaultQuietHours: PushQuietHours?
+    private var quietHoursGeneration = UUID()
+    private var quietHoursRequest = 0
 
     /// The app owns navigation. Never open arbitrary payload URLs automatically.
     /// Called for a matching notification while the app is active, before presentation.
@@ -69,13 +77,14 @@ public enum PushPermission: String, Sendable {
     private var installed = false
     private var pendingTap: [AnyHashable: Any]?
 
-    public convenience init(app: ScaleMuleApp) {
-        self.init(app: app, system: ApplePushSystem(), defaults: .standard)
+    public convenience init(app: ScaleMuleApp, defaultQuietHours: PushQuietHours? = nil) {
+        self.init(app: app, system: ApplePushSystem(), defaults: .standard, defaultQuietHours: defaultQuietHours)
         // A cold-start response can arrive before SwiftUI onAppear.
         UNUserNotificationCenter.current().delegate = self
     }
 
-    init(app: ScaleMuleApp, system: PushSystem, defaults: UserDefaults) {
+    init(app: ScaleMuleApp, system: PushSystem, defaults: UserDefaults, defaultQuietHours: PushQuietHours? = nil) {
+        self.defaultQuietHours = defaultQuietHours
         self.app = app
         self.service = PushService(app: app)
         self.system = system
@@ -87,13 +96,15 @@ public enum PushPermission: String, Sendable {
         super.init()
     }
 
-    deinit { authTask?.cancel(); operation?.cancel() }
+    deinit { authTask?.cancel(); operation?.cancel(); NotificationCenter.default.removeObserver(self) }
 
     /// Install early, normally from the SDK app delegate's property assignment.
     public func install() {
         UNUserNotificationCenter.current().delegate = self
         guard !installed else { return }
         installed = true
+        NotificationCenter.default.addObserver(self, selector: #selector(systemTimezoneChanged),
+            name: .NSSystemTimeZoneDidChange, object: nil)
         let sdkApp = app
         authTask = Task { [weak self] in
             let stream = await sdkApp.authStateStream()
@@ -138,14 +149,17 @@ public enum PushPermission: String, Sendable {
     /// Refresh after returning from iOS Settings or foregrounding the app.
     /// Does not display a permission prompt.
     public func refresh() async {
+        deviceTimeZoneIdentifier = TimeZone.autoupdatingCurrent.identifier
         permission = await system.permission()
         guard isEnabled, permission.allowsNotifications, currentUserId != nil else {
             system.unregister()
             await removeBinding()
+            await refreshQuietHours()
             return
         }
         lastError = nil
         system.register()
+        await refreshQuietHours()
     }
 
     public func setEnabled(_ enabled: Bool) async {
@@ -179,7 +193,8 @@ public enum PushPermission: String, Sendable {
             defer { self.isWorking = false }
             let result = await self.service.register(deviceToken: deviceToken, userId: userId, session: session,
                 appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
-                osVersion: UIDevice.current.systemVersion)
+                osVersion: UIDevice.current.systemVersion,
+                timeZone: TimeZone.autoupdatingCurrent.identifier, defaultQuietHours: self.defaultQuietHours)
             guard case .success(let registration) = result else {
                 self.fail("Couldn’t register this device for notifications. Please try again.")
                 return
@@ -196,7 +211,44 @@ public enum PushPermission: String, Sendable {
             // explicit local opt-in enables it again after a previous disable.
             let enabled = await self.service.setEnabled(true, id: registration.id, session: session)
             self.isRegistered = enabled.isSuccess
+            await self.refreshQuietHours()
             if !enabled.isSuccess { self.fail("Couldn’t enable notifications on this device. Please try again.") }
+        }
+    }
+
+    @objc private func systemTimezoneChanged() {
+        Task { await refresh() }
+    }
+
+    public func refreshQuietHours() async {
+        guard !isSavingQuietHours, let user = currentUserId,
+              let session = await app.sessionManager.sessionToken else { return }
+        let generation = quietHoursGeneration
+        quietHoursRequest += 1
+        let request = quietHoursRequest
+        isLoadingQuietHours = true
+        let result = await service.preferences(session: session)
+        guard currentUserId == user, quietHoursGeneration == generation, quietHoursRequest == request else { return }
+        isLoadingQuietHours = false
+        switch result {
+        case .success(let preferences): quietHours = preferences.quietHours; quietHoursError = nil
+        case .failure: quietHoursError = "Your notification schedule couldn’t load. Pull down to refresh."
+        }
+    }
+
+    @discardableResult public func setQuietHours(_ schedule: PushQuietHours) async -> Bool {
+        guard !isSavingQuietHours, let user = currentUserId,
+              let session = await app.sessionManager.sessionToken else { return false }
+        let generation = quietHoursGeneration
+        quietHoursRequest += 1 // Invalidate a read that started before this save.
+        isLoadingQuietHours = false
+        isSavingQuietHours = true
+        let result = await service.setQuietHours(schedule, session: session)
+        guard currentUserId == user, quietHoursGeneration == generation else { return false }
+        isSavingQuietHours = false
+        switch result {
+        case .success(let preferences): quietHours = preferences.quietHours; quietHoursError = nil; return true
+        case .failure: quietHoursError = "Your schedule wasn’t saved. Check your connection and save again."; return false
         }
     }
 
@@ -208,6 +260,9 @@ public enum PushPermission: String, Sendable {
     /// Call BEFORE clearing/revoking the user's session. The OS is unregistered
     /// immediately; server cleanup uses the session that created the binding.
     public func deactivateBeforeSignOut() async {
+        quietHoursGeneration = UUID(); quietHoursRequest += 1
+        quietHours = nil; quietHoursError = nil
+        isLoadingQuietHours = false; isSavingQuietHours = false
         currentUserId = nil
         pendingTap = nil
         system.unregister()
