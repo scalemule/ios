@@ -277,6 +277,7 @@ struct ReceivedGiftCard<Artwork: View>: View {
 
 struct GiftPersonAvatar: View {
     let person: GiftRecipient?
+    var placeholderFont: Font = .system(.caption, design: .rounded).bold()
     @Environment(\.giftTheme) private var theme
     var body: some View {
         Group {
@@ -287,7 +288,7 @@ struct GiftPersonAvatar: View {
     }
     private var placeholder: some View {
         Text(person?.name.first.map { String($0).uppercased() } ?? "?")
-            .font(.system(.caption, design: .rounded).bold())
+            .font(placeholderFont)
             .foregroundStyle(theme.onAccent)
             .frame(maxWidth: .infinity, maxHeight: .infinity).background(theme.accent)
     }
