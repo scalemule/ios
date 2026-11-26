@@ -84,6 +84,58 @@ final class GiftScreenSnapshots: XCTestCase {
         }
     }
 
+    // Native text fields and scroll views cannot be drawn by ImageRenderer.
+    private func writeHosted<V: View>(_ name: String, height: CGFloat, @ViewBuilder _ view: () -> V) throws {
+        guard let folder = ProcessInfo.processInfo.environment["GIFT_SNAPSHOT_DIR"] else { throw XCTSkip("GIFT_SNAPSHOT_DIR is not set") }
+        try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+        let screen = view().frame(width: 393, height: height, alignment: .top)
+            .background(Color.black).giftTheme(theme).environment(\.colorScheme, .dark)
+        let host = NSHostingView(rootView: screen)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 393, height: height),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        host.frame = NSRect(x: 0, y: 0, width: 393, height: height)
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        host.layoutSubtreeIfNeeded()
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let data = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        try data.write(to: URL(fileURLWithPath: folder).appendingPathComponent(name + ".png"))
+        window.close()
+    }
+
+    func testRecipientPicker() throws {
+        let people = [GiftRecipient(id: "maya", name: "Maya Chen"),
+                      GiftRecipient(id: "maria", name: "Мария Петрова"),
+                      GiftRecipient(id: "alex", name: "Alexandra Montgomery Williams"),
+                      GiftRecipient(id: "mei", name: "陈美玲")]
+        try writeHosted("recipient-picker", height: 560) {
+            VStack(spacing: 0) {
+                HStack { Image(systemName: "xmark"); Spacer(); Text("Send to").font(.headline); Spacer(); Image(systemName: "xmark").hidden() }.padding(20)
+                GiftRecipientPickerContent(people: people, selectedID: "maya", search: .constant(""), retry: {}) { _ in }
+            }
+        }
+        try writeHosted("recipient-picker-large-text", height: 750) {
+            GiftRecipientPickerContent(people: people, selectedID: "maya", search: .constant(""), retry: {}) { _ in }
+                .environment(\.dynamicTypeSize, .accessibility3)
+        }
+    }
+
+    func testRecipientPickerStates() throws {
+        try writeHosted("recipient-search-empty", height: 460) {
+            GiftRecipientPickerContent(people: [GiftRecipient(id: "maya", name: "Maya Chen")], selectedID: nil,
+                search: .constant("Sam"), retry: {}) { _ in }
+        }
+        try writeHosted("recipient-load-retry", height: 460) {
+            GiftRecipientPickerContent(people: [], selectedID: nil, search: .constant(""), failed: true, retry: {}) { _ in }
+        }
+        try writeHosted("recipient-empty", height: 460) {
+            GiftRecipientPickerContent(people: [], selectedID: nil, search: .constant(""), retry: {}) { _ in }
+        }
+    }
+
     private func received(_ slug: String, name: String) throws -> DigitalGift {
         let url = "https://example.com/\(slug).png"
         return try JSONDecoder().decode(DigitalGift.self, from: Data("""

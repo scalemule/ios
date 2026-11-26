@@ -103,7 +103,7 @@ public struct GiftPickerView: View {
             NavigationStack { CommerceWalletView(store: store) }.giftSheet()
         }
         .sheet(isPresented: $showRecipients) {
-            if let loadRecipients { GiftRecipientPicker(load: loadRecipients) { recipient = $0; sent = nil } }
+            if let loadRecipients { GiftRecipientPicker(load: loadRecipients, selectedID: recipient?.id) { recipient = $0; sent = nil } }
         }
     }
 
