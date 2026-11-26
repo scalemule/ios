@@ -297,4 +297,19 @@ public enum EntityErrorCode {
     public static let kindNotAvailable = "ENTITY_KIND_NOT_AVAILABLE"
     /// Two changes met; nothing was written. The same call succeeds when repeated.
     public static let busy = "ENTITY_BUSY"
+
+    // Records of an entity (`EntityRecordsService`).
+
+    public static let recordNotFound = "ENTITY_RECORD_NOT_FOUND"
+    /// The record changed since the version the change was made on.
+    public static let recordVersionConflict = "ENTITY_RECORD_VERSION_CONFLICT"
+    public static let recordLimitReached = "ENTITY_RECORD_LIMIT_REACHED"
+    public static let recordTooLarge = "ENTITY_RECORD_TOO_LARGE"
+    /// The id is used by another record; create again with a new id.
+    public static let recordIDTaken = "ENTITY_RECORD_ID_TAKEN"
+    /// The collection is not declared for this kind of entity.
+    public static let recordsNotEnabled = "ENTITY_RECORDS_NOT_ENABLED"
+    public static let kindMismatch = "ENTITY_KIND_MISMATCH"
+    /// Access could not be checked for a moment; the same call works shortly after.
+    public static let accessNotReady = "ENTITY_ACCESS_NOT_READY"
 }
