@@ -22,7 +22,10 @@ public struct RemotePhotoView: View {
         /// middle; a bar shows the part on screen and the first wide photo
         /// after launch glides once with `hint` (iOS 18; earlier, `.crop`).
         /// `indicatorBottom` is the bar's distance from the bottom edge.
-        case pan(hint: String?, indicatorBottom: CGFloat = 88)
+        /// `upright: true` scrolls an upright photo too when filling the
+        /// frame's height would cut more than a tenth of the frame's width
+        /// off its sides (a 3:4 camera photo on a tall phone screen).
+        case pan(hint: String?, indicatorBottom: CGFloat = 88, upright: Bool = false)
     }
 
     /// Replaces the network load (previews, UI tests): returns the picture,
@@ -100,6 +103,15 @@ public struct RemotePhotoView: View {
         image.size.height > 0 && image.size.width / image.size.height > 0.95
     }
 
+    /// Whether `WideStyle.pan` scrolls this picture sideways in a frame of
+    /// `size`: a wide picture always; with `upright`, also a taller one
+    /// whose sides the frame would cut by more than a tenth of its width.
+    public static func pans(_ image: UIImage, in size: CGSize, upright: Bool) -> Bool {
+        if isWide(image) { return true }
+        guard upright, image.size.height > 0, size.width > 0 else { return false }
+        return size.height * image.size.width / image.size.height > size.width * 1.1
+    }
+
     static func bigEnough(_ image: UIImage, for width: Int) -> Bool {
         max(image.size.width * image.scale, image.size.height * image.scale) >= CGFloat(width) * 0.9
     }
@@ -155,7 +167,8 @@ public struct RemotePhotoView: View {
 
     @ViewBuilder
     private func loaded(_ image: UIImage) -> some View {
-        if case .pan(let hint, let indicatorBottom) = wideStyle, Self.isWide(image), #available(iOS 18.0, *) {
+        if case .pan(let hint, let indicatorBottom, let upright) = wideStyle,
+           Self.pans(image, in: size, upright: upright), #available(iOS 18.0, *) {
             PannedPhoto(image: image, size: size, hint: hint, indicatorBottom: indicatorBottom) { onTap(image) }
         } else {
             Image(uiImage: image)
