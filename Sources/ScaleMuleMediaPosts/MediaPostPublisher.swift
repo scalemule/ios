@@ -13,10 +13,14 @@ public enum MediaPostAttributes {
     public static let caption = "caption"
     /// The chosen `SharedLocation`, as JSON.
     public static let location = "location"
+    /// The shared entity (a pet) the post is made for; absent for a person's
+    /// own post.
+    public static let entityId = "entity_id"
 
-    public static func make(caption: String, location: SharedLocation?) -> [String: String] {
+    public static func make(caption: String, location: SharedLocation?, entityId: String? = nil) -> [String: String] {
         var attributes: [String: String] = [:]
         if !caption.isEmpty { attributes[Self.caption] = caption }
+        if let entityId, !entityId.isEmpty { attributes[Self.entityId] = entityId }
         if let location, let data = try? JSONEncoder().encode(location) {
             attributes[Self.location] = String(decoding: data, as: UTF8.self)
         }
@@ -25,6 +29,10 @@ public enum MediaPostAttributes {
 
     public static func caption(_ attributes: [String: String]) -> String {
         attributes[caption] ?? ""
+    }
+
+    public static func entityId(_ attributes: [String: String]) -> String? {
+        attributes[entityId].flatMap { $0.isEmpty ? nil : $0 }
     }
 
     /// The chosen location. Attributes without one (or with loose
@@ -73,14 +81,15 @@ public struct MediaPostPublisher: Sendable {
         duration: Double?,
         caption: String,
         location: SharedLocation?,
-        authorName: String
+        authorName: String?
     ) -> [String: Any] {
         var metadata: [String: Any] = [
             MediaPost.Keys.kind: kind.rawValue,
-            MediaPost.Keys.authorName: authorName,
             MediaPost.Keys.width: width,
             MediaPost.Keys.height: height,
         ]
+        // An entity's post carries no person's name.
+        if let authorName { metadata[MediaPost.Keys.authorName] = authorName }
         if let place = location?.label { metadata[MediaPost.Keys.place] = place }
         if let duration { metadata[MediaPost.Keys.duration] = (duration * 10).rounded() / 10 }
         if !caption.isEmpty { metadata[MediaPost.Keys.caption] = caption }
@@ -97,7 +106,8 @@ public struct MediaPostPublisher: Sendable {
         duration: Double? = nil,
         caption: String,
         location: SharedLocation?,
-        authorName: String
+        authorName: String,
+        entityId: String? = nil
     ) async -> ApiResponse<MediaPost> {
         let result = await social.createPost(
             content: caption.isEmpty ? (location?.label ?? defaultContent) : caption,
@@ -106,9 +116,10 @@ public struct MediaPostPublisher: Sendable {
             tags: tags.isEmpty ? nil : tags,
             metadata: Self.metadata(
                 kind: kind, width: width, height: height, duration: duration,
-                caption: caption, location: location, authorName: authorName
+                caption: caption, location: location, authorName: entityId == nil ? authorName : nil
             ),
-            location: location
+            location: location,
+            entityId: entityId
         )
         switch result {
         case .success(let post):
@@ -133,7 +144,8 @@ public struct MediaPostPublisher: Sendable {
             duration: upload.duration,
             caption: MediaPostAttributes.caption(upload.attributes),
             location: MediaPostAttributes.location(upload.attributes),
-            authorName: authorName
+            authorName: authorName,
+            entityId: MediaPostAttributes.entityId(upload.attributes)
         )
     }
     #endif

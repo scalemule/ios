@@ -498,6 +498,26 @@ public final class SocialFeedModel: ObservableObject {
         }
     }
 
+    /// Change what one of the person's own posts shows about where, or take
+    /// the place off (`location: nil`). The post is redrawn where it is.
+    ///
+    /// Returns the post as it now is, or nil when it could not be changed:
+    /// `error` says why.
+    @discardableResult
+    public func setOwnPostLocation(_ post: MediaPost, to location: SharedLocation?) async -> MediaPost? {
+        guard post.isMine, let social else { return nil }
+        switch await social.setPostLocation(id: post.id, location: location) {
+        case .success(let changed):
+            guard let updated = MediaPost(post: changed, currentUserId: currentUserId) else { return nil }
+            if let index = items.firstIndex(where: { $0.id == post.id }) { items[index] = updated }
+            return updated
+        case .failure(let apiError):
+            logger.error("Post place change failed: \(apiError.message, privacy: .public)")
+            error = FeedError(message: apiError.userFacingMessage)
+            return nil
+        }
+    }
+
     /// A post was deleted or hidden somewhere else in the app (another
     /// screen's model): take it out of this feed. Unlike `hideReported`, a
     /// later `showRestored` or a reload can show it again.

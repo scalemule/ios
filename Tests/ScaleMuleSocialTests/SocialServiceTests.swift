@@ -96,6 +96,74 @@ final class SocialServiceTests: XCTestCase {
         _ = assertApiSuccess(await social.createPost(content: "Rothko", metadata: ["kind": "photo"], location: museum))
     }
 
+    func testAPostForAPetSendsThePetAndReadsThePetAsItsAuthor() async {
+        let (_, social) = await signedIn()
+        let pet = "019c0000-0000-7000-8000-0000000000e1"
+        // What Social answers for an entity's post: the entity everywhere a
+        // person would be, and whether the signed-in person made it.
+        let answer = Self.postJSON
+            .replacingOccurrences(of: "019b0000-0000-7000-8000-0000000000aa", with: pet)
+            .replacingOccurrences(of: "\"likes_count\": 2,", with: """
+            "likes_count": 2, "entity_id": "\(pet)", "posted_by_viewer": true,
+            "author": {"id": "\(pet)", "name": "Mochi", "kind": "pet", "avatar_url": "https://cdn-public.scalemule.com/a/anonymous/mochi.jpg"},
+            """)
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url?.path, "/v1/social/posts")
+            XCTAssertEqual(self.bodyJSON(request)?["entity_id"] as? String, pet)
+            return TestFixtures.envelopedResponse(json: answer)
+        }
+        let post = assertApiSuccess(await social.createPost(content: "Nap", mediaIds: ["p1"], entityId: pet))
+        XCTAssertEqual(post?.userId, pet)
+        XCTAssertEqual(post?.entityId, pet)
+        XCTAssertEqual(post?.postedByViewer, true)
+        XCTAssertEqual(post?.author?.name, "Mochi")
+        XCTAssertEqual(post?.author?.kind, "pet")
+
+        // A person's own post sends no entity and reads none.
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertNil(self.bodyJSON(request)?["entity_id"])
+            return TestFixtures.envelopedResponse(json: Self.postJSON)
+        }
+        let own = assertApiSuccess(await social.createPost(content: "Mine"))
+        XCTAssertNil(own?.entityId)
+        XCTAssertNil(own?.postedByViewer)
+        XCTAssertNil(own?.author?.kind)
+    }
+
+    func testAPetsPostsAreReadFromThePetsOwnList() async {
+        let (_, social) = await signedIn()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.url?.path, "/v1/social/entities/019c0000-0000-7000-8000-0000000000e1/posts")
+            return TestFixtures.envelopedResponse(json: "{\"posts\": [\(Self.postJSON)]}")
+        }
+        let posts = assertApiSuccess(await social.entityPosts(entityId: "019c0000-0000-7000-8000-0000000000e1"))
+        XCTAssertEqual(posts?.count, 1)
+    }
+
+    func testAPostsPlaceIsChangedOrTakenOff() async {
+        let (_, social) = await signedIn()
+        let id = "019b0000-0000-7000-8000-000000000001"
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.httpMethod, "PUT")
+            XCTAssertEqual(request.url?.path, "/v1/social/posts/\(id)/location")
+            let body = self.bodyJSON(request)!
+            XCTAssertTrue(body["location"] is NSNull, "taking the place off sends null")
+            return TestFixtures.envelopedResponse(json: Self.postJSON)
+        }
+        _ = assertApiSuccess(await social.setPostLocation(id: id, location: nil))
+
+        MockURLProtocol.requestHandler = { request in
+            let location = self.bodyJSON(request)?["location"] as? [String: Any]
+            XCTAssertEqual(location?["precision"] as? String, "city")
+            XCTAssertEqual(location?["name"] as? String, "Walnut Creek")
+            return TestFixtures.envelopedResponse(json: Self.postJSON)
+        }
+        let town = SharedLocation(precision: .city, latitude: 37.9101, longitude: -122.0652,
+                                  name: "Walnut Creek", locality: "Walnut Creek", countryCode: "US")
+        _ = assertApiSuccess(await social.setPostLocation(id: id, location: town))
+    }
+
     func testPostsNearPostsTheSpotInTheBodyAndDecodesThePage() async {
         let (_, social) = await signedIn()
         let located = Self.postJSON.replacingOccurrences(
