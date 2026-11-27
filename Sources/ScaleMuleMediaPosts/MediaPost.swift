@@ -87,9 +87,16 @@ public struct MediaPost: Identifiable, Equatable, Codable, Sendable {
         authorId = post.userId
         entityId = post.entityId
         isMine = post.postedByViewer ?? (post.userId == currentUserId)
-        authorName = post.author?.firstName
-            ?? post.metadataString(Keys.authorName).flatMap { $0.isEmpty ? nil : $0 }
-            ?? (isMine ? ownName : otherName)
+        if post.entityId != nil {
+            // A shared entity's post (a pet's) carries the entity's whole
+            // name ("Sample dog", not "Sample"), and is never "You": the
+            // person who made it is not its author.
+            authorName = post.author?.name.flatMap { $0.isEmpty ? nil : $0 } ?? otherName
+        } else {
+            authorName = post.author?.firstName
+                ?? post.metadataString(Keys.authorName).flatMap { $0.isEmpty ? nil : $0 }
+                ?? (isMine ? ownName : otherName)
+        }
         authorAvatarURL = post.author?.avatarURL
         location = post.location
         if let location = post.location {
