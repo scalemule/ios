@@ -167,6 +167,12 @@ final class MediaPostTests: XCTestCase {
         // Anyone else: the pet's post, not theirs, and no person's name to fall back on.
         let seen = try XCTUnwrap(MediaPost(post: try entityPost(postedByViewer: false), currentUserId: "pet-1"))
         XCTAssertFalse(seen.isMine)
+        // The pet's whole name is shown, and a pet whose name did not come
+        // is never "You", also on the post of the person who made it.
+        let twoWords = #","entity_id":"pet-1","posted_by_viewer":true,"author":{"id":"pet-1","name":"Sample dog","kind":"pet"}}"#
+        XCTAssertEqual(MediaPost(post: try socialPost(String(base.dropLast()) + twoWords), currentUserId: "me")?.authorName, "Sample dog")
+        let unnamed = #","entity_id":"pet-1","posted_by_viewer":true}"#
+        XCTAssertEqual(MediaPost(post: try socialPost(String(base.dropLast()) + unnamed), currentUserId: "me", otherName: "A pet")?.authorName, "A pet")
         // The saved copy keeps the pet.
         let saved = try JSONDecoder().decode(MediaPost.self, from: JSONEncoder().encode(mine))
         XCTAssertEqual(saved.entityId, "pet-1")
