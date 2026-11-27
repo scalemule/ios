@@ -907,6 +907,17 @@ final class MediaPostViewsTests: XCTestCase {
         XCTAssertFalse(RemotePhotoView.isWide(upright))
     }
 
+    func testAnUprightPhotoPansOnlyWhenAskedAndWhenTheFrameCutsItsSides() {
+        let screen = CGSize(width: 440, height: 956)
+        let camera = UIGraphicsImageRenderer(size: CGSize(width: 3, height: 4)).image { _ in }
+        let tall = UIGraphicsImageRenderer(size: CGSize(width: 440, height: 956)).image { _ in }
+        let wide = UIGraphicsImageRenderer(size: CGSize(width: 4, height: 3)).image { _ in }
+        XCTAssertFalse(RemotePhotoView.pans(camera, in: screen, upright: false), "as before unless the app asks")
+        XCTAssertTrue(RemotePhotoView.pans(camera, in: screen, upright: true), "a 3:4 photo loses its sides on a tall screen")
+        XCTAssertFalse(RemotePhotoView.pans(tall, in: screen, upright: true), "a photo the shape of the screen has nothing to scroll")
+        XCTAssertTrue(RemotePhotoView.pans(wide, in: screen, upright: false))
+    }
+
     func testEachProfilePhotoLinkIsCachedOnItsOwn() {
         let link = URL(string: "https://cdn-public.scalemule.com/019b247f-00c7-7443-a366-49435cd11a2b/anonymous/photos/01a2078f-58d2-770c-aa28-1d19d40ec4b1/w256_h256_cover_q85_jpeg.jpeg")!
         let other = URL(string: "https://cdn-public.scalemule.com/019b247f-00c7-7443-a366-49435cd11a2b/anonymous/photos/01a2078f-b686-738a-9998-08ac64e21ac1/w256_h256_cover_q85_jpeg.jpeg")!
