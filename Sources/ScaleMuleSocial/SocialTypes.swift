@@ -41,6 +41,13 @@ public struct SocialPost: Sendable, Decodable, Identifiable, Equatable {
     /// The author as they are now. Social fills it on every page; nil from an
     /// older server or when Social could not look the author up in time.
     public let author: PostAuthor?
+    /// The shared entity (a pet, a team) the post belongs to; nil for a
+    /// person's own post. `userId` and `author` are then the entity's: Social
+    /// never says which person made an entity's post.
+    public let entityId: String?
+    /// For an entity's post: whether the signed-in person made it. nil for a
+    /// person's own post (compare `userId` there).
+    public let postedByViewer: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case id, author
@@ -55,6 +62,8 @@ public struct SocialPost: Sendable, Decodable, Identifiable, Equatable {
         case sharesCount = "shares_count"
         case viewerFollowsAuthor = "viewer_follows_author"
         case createdAt = "created_at"
+        case entityId = "entity_id"
+        case postedByViewer = "posted_by_viewer"
     }
 
     public init(from decoder: Decoder) throws {
@@ -76,6 +85,8 @@ public struct SocialPost: Sendable, Decodable, Identifiable, Equatable {
         viewerFollowsAuthor = try? c.decodeIfPresent(Bool.self, forKey: .viewerFollowsAuthor)
         createdAt = try c.decode(String.self, forKey: .createdAt)
         author = (try? c.decodeIfPresent(PostAuthor.self, forKey: .author)) ?? nil
+        entityId = (try? c.decodeIfPresent(String.self, forKey: .entityId)) ?? nil
+        postedByViewer = (try? c.decodeIfPresent(Bool.self, forKey: .postedByViewer)) ?? nil
     }
 
     /// `createdAt` as a date, when it parses.
@@ -108,11 +119,15 @@ public struct PostAuthor: Sendable, Decodable, Equatable {
     public let name: String?
     /// The profile photo; only an `https` link is kept.
     public let avatarURL: URL?
+    /// The entity's kind ("pet") when the author is a shared entity; nil for
+    /// a person.
+    public let kind: String?
 
-    public init(id: String, name: String?, avatarURL: URL?) {
+    public init(id: String, name: String?, avatarURL: URL?, kind: String? = nil) {
         self.id = id
         self.name = name
         self.avatarURL = avatarURL
+        self.kind = kind
     }
 
     /// The first word of the name ("Maya" of "Maya Okafor").
@@ -121,7 +136,7 @@ public struct PostAuthor: Sendable, Decodable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name
+        case id, name, kind
         case avatarURL = "avatar_url"
     }
 
@@ -136,6 +151,7 @@ public struct PostAuthor: Sendable, Decodable, Equatable {
         let link = (try c.decodeIfPresent(String.self, forKey: .avatarURL))?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         avatarURL = link.flatMap(URL.init(string:)).flatMap { $0.scheme?.lowercased() == "https" && $0.host != nil ? $0 : nil }
+        kind = (try? c.decodeIfPresent(String.self, forKey: .kind)) ?? nil
     }
 }
 

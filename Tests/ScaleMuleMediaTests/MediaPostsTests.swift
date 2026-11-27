@@ -151,6 +151,44 @@ final class MediaPostTests: XCTestCase {
         XCTAssertEqual(item.duration, 7.5)
     }
 
+    func testAPetsPostShowsThePetAndIsMineOnlyForWhoMadeIt() throws {
+        let base = postJSON(id: "p1", user: "pet-1", metadata: #"{"kind":"photo","width":1080,"height":1920}"#)
+        func entityPost(postedByViewer: Bool) throws -> SocialPost {
+            let extra = #","entity_id":"pet-1","posted_by_viewer":\#(postedByViewer),"author":{"id":"pet-1","name":"Mochi","kind":"pet","avatar_url":"https://cdn-public.scalemule.com/a/anonymous/mochi.jpg"}}"#
+            return try socialPost(String(base.dropLast()) + extra)
+        }
+        // The person who made it: theirs, though the author is the pet.
+        let mine = try XCTUnwrap(MediaPost(post: try entityPost(postedByViewer: true), currentUserId: "me"))
+        XCTAssertTrue(mine.isMine)
+        XCTAssertEqual(mine.authorId, "pet-1")
+        XCTAssertEqual(mine.entityId, "pet-1")
+        XCTAssertEqual(mine.authorName, "Mochi")
+        XCTAssertEqual(mine.authorAvatarURL?.host, "cdn-public.scalemule.com")
+        // Anyone else: the pet's post, not theirs, and no person's name to fall back on.
+        let seen = try XCTUnwrap(MediaPost(post: try entityPost(postedByViewer: false), currentUserId: "pet-1"))
+        XCTAssertFalse(seen.isMine)
+        // The saved copy keeps the pet.
+        let saved = try JSONDecoder().decode(MediaPost.self, from: JSONEncoder().encode(mine))
+        XCTAssertEqual(saved.entityId, "pet-1")
+        XCTAssertTrue(saved.isMine)
+        // A person's own post is unchanged.
+        let own = try XCTUnwrap(MediaPost(post: try socialPost(postJSON(id: "p2", user: "me")), currentUserId: "me"))
+        XCTAssertTrue(own.isMine)
+        XCTAssertNil(own.entityId)
+    }
+
+    func testAPetsPostCarriesNoPersonsName() {
+        let forPet = MediaPostPublisher.metadata(kind: .photo, width: 1, height: 1, duration: nil, caption: "",
+                                                 location: nil, authorName: nil)
+        XCTAssertNil(forPet[MediaPost.Keys.authorName])
+        let own = MediaPostPublisher.metadata(kind: .photo, width: 1, height: 1, duration: nil, caption: "",
+                                              location: nil, authorName: "Maya")
+        XCTAssertEqual(own[MediaPost.Keys.authorName] as? String, "Maya")
+        let attributes = MediaPostAttributes.make(caption: "Nap", location: nil, entityId: "pet-1")
+        XCTAssertEqual(MediaPostAttributes.entityId(attributes), "pet-1")
+        XCTAssertNil(MediaPostAttributes.entityId(MediaPostAttributes.make(caption: "Nap", location: nil)))
+    }
+
     func testTimeAgo() throws {
         let item = try XCTUnwrap(MediaPost(post: socialPost(postJSON(id: "p9")), currentUserId: nil))
         let created = try XCTUnwrap(item.createdAt)

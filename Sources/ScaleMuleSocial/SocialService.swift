@@ -33,6 +33,12 @@ public final class SocialService: ServiceModule, @unchecked Sendable {
         await posts(path: "/v1/social/users/\(Self.segment(userId))/posts", page: page, perPage: perPage)
     }
 
+    /// One page of the posts of a shared entity (a pet): its public posts,
+    /// and the private ones the signed-in person made for it.
+    public func entityPosts(entityId: String, page: Int = 1, perPage: Int = 20) async -> ApiResponse<[SocialPost]> {
+        await posts(path: "/v1/social/entities/\(Self.segment(entityId))/posts", page: page, perPage: perPage)
+    }
+
     // MARK: - Posts
 
     /// Create a post. `content` must be 1-5000 characters.
@@ -48,7 +54,8 @@ public final class SocialService: ServiceModule, @unchecked Sendable {
         visibility: PostVisibility = .public,
         tags: [String]? = nil,
         metadata: [String: Any]? = nil,
-        location: SharedLocation? = nil
+        location: SharedLocation? = nil,
+        entityId: String? = nil
     ) async -> ApiResponse<SocialPost> {
         var body: [String: Any] = [
             "content": content,
@@ -60,6 +67,10 @@ public final class SocialService: ServiceModule, @unchecked Sendable {
         if let tags { body["tags"] = tags }
         if let metadata { body["metadata"] = metadata }
         if let location { body["location"] = location.body }
+        // The post is the entity's (a pet's): readers see the entity, and
+        // Social keeps who made it to itself. The signed-in person must be a
+        // member of the entity, and the app must allow entity posts.
+        if let entityId { body["entity_id"] = entityId }
 
         return await client.request(RequestOptions(
             method: .post,
@@ -67,6 +78,17 @@ public final class SocialService: ServiceModule, @unchecked Sendable {
             body: body,
             credential: .accessToken,
             retryable: false
+        ))
+    }
+
+    /// Change what one of your own posts shows about where, or take the
+    /// place off (`location: nil`). The rules are those of posting.
+    public func setPostLocation(id: String, location: SharedLocation?) async -> ApiResponse<SocialPost> {
+        await client.request(RequestOptions(
+            method: .put,
+            path: "/v1/social/posts/\(Self.segment(id))/location",
+            body: ["location": location.map { $0.body as Any } ?? NSNull()],
+            credential: .accessToken
         ))
     }
 

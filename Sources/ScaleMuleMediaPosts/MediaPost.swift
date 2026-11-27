@@ -67,7 +67,13 @@ public struct MediaPost: Identifiable, Equatable, Codable, Sendable {
     /// nil when Social did not say (see `FollowStore`).
     public let authorFollowed: Bool?
     public let createdAt: Date?
+    /// Whether the signed-in person made the post (their own, or one they
+    /// made for a shared entity such as a pet).
     public let isMine: Bool
+    /// The shared entity (a pet) the post belongs to; nil for a person's own
+    /// post. `authorId`, `authorName` and `authorAvatarURL` are then the
+    /// entity's.
+    public let entityId: String?
 
     /// Read a Social post; nil when it has no media.
     ///
@@ -79,7 +85,8 @@ public struct MediaPost: Identifiable, Equatable, Codable, Sendable {
         id = post.id
         self.mediaId = mediaId
         authorId = post.userId
-        isMine = post.userId == currentUserId
+        entityId = post.entityId
+        isMine = post.postedByViewer ?? (post.userId == currentUserId)
         authorName = post.author?.firstName
             ?? post.metadataString(Keys.authorName).flatMap { $0.isEmpty ? nil : $0 }
             ?? (isMine ? ownName : otherName)
@@ -170,7 +177,7 @@ public struct MediaPost: Identifiable, Equatable, Codable, Sendable {
     // likesCount, likedAtLoad, latitude/longitude/precision/placeId) still read.
     private enum CodingKeys: String, CodingKey {
         case id, mediaId, authorId, authorName, authorAvatarURL, kind, width, height, caption, duration
-        case location, place, likes, likedByMe, createdAt, isMine, comments, authorFollowed
+        case location, place, likes, likedByMe, createdAt, isMine, comments, authorFollowed, entityId
         case photoId, likesCount, likedAtLoad, latitude, longitude, precision, placeId
     }
 
@@ -210,6 +217,7 @@ public struct MediaPost: Identifiable, Equatable, Codable, Sendable {
         authorFollowed = try c.decodeIfPresent(Bool.self, forKey: .authorFollowed)
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt)
         isMine = try c.decode(Bool.self, forKey: .isMine)
+        entityId = try c.decodeIfPresent(String.self, forKey: .entityId)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -232,5 +240,6 @@ public struct MediaPost: Identifiable, Equatable, Codable, Sendable {
         try c.encodeIfPresent(authorFollowed, forKey: .authorFollowed)
         try c.encodeIfPresent(createdAt, forKey: .createdAt)
         try c.encode(isMine, forKey: .isMine)
+        try c.encodeIfPresent(entityId, forKey: .entityId)
     }
 }
