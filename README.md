@@ -198,6 +198,38 @@ case .failure(let error): break                  // rawCode == phoneCodeInvalidC
   and `.rateLimited` are the answers.
 - A person with a phone account has no email: `AuthUser.email` is `nil`.
 
+## Contact support in the app (Safety)
+
+`SupportDeskService` gives an app a conversation with its team: the person
+writes in the app, the team answers in its own support inbox (for example a
+CoralMeet workspace), and the app shows the answers.
+
+The app never talks to the inbox. It talks to **its own website**, which
+checks the person's ScaleMule session, keeps the inbox's credentials on the
+server and passes messages both ways. Nothing but the app's publishable key
+is in the app.
+
+```swift
+let desk = SupportDeskService(app: scalemule, endpoint: URL(string: "https://example.com/api/support/messages")!)
+
+let thread = await desk.messages()          // oldest first; empty until the person writes
+let sent = await desk.send("My video won't upload")
+desk.forgetConversation()                   // when the person signs out or deletes the account
+```
+
+What the site's route must do:
+
+- `GET` → `{ "messages": [{ "id", "text", "from": "you" | "team", "sent_at" }] }`.
+- `POST { "content", "device": { "version", "build", "os", "model" } }` → `{ "message": { … } }`.
+- Read the person from `Authorization: Bearer <their ScaleMule token>` (check it
+  with `GET /v1/auth/me` and the site's own key); refuse anyone else with 401.
+- Refuse with `{ "code", "message" }`, where `message` is a plain sentence the
+  app can show. A 401 makes the SDK renew the token and try once more.
+- Keep the conversation in HttpOnly cookies; `URLSession.shared` stores them.
+
+`SupportService` (ScaleMule Feedback) is still there for apps that have
+Feedback switched on.
+
 ## Photo feed (Social + Photos)
 
 A photo feed is a Social post whose `mediaIds` hold Photos ids. Every app
