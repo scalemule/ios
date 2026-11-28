@@ -27,7 +27,7 @@ final class AuthServiceLedveryPhoneTests: XCTestCase {
             XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"), "no session needed")
             body = self.bodyJSON(request)
             return TestFixtures.envelopedResponse(json: """
-            {"phone": "+14155550134", "resend_after_seconds": 45, "expires_in_seconds": 600}
+            {"phone": "+14155550134", "attempt_id": "01a15f00-0000-7000-8000-000000000001", "resend_after_seconds": 45, "expires_in_seconds": 600}
             """)
         }
         let sent = assertApiSuccess(await auth.sendLedveryPhoneCode(phone: " +14155550134 "))
@@ -41,7 +41,7 @@ final class AuthServiceLedveryPhoneTests: XCTestCase {
         let (app, _) = createTestClient()
         let auth = AuthService(app: app)
         MockURLProtocol.requestHandler = { _ in
-            TestFixtures.envelopedResponse(json: #"{"phone": "+442079460958"}"#)
+            TestFixtures.envelopedResponse(json: #"{"phone": "+442079460958", "attempt_id": "a1"}"#)
         }
         let sent = assertApiSuccess(await auth.sendLedveryPhoneCode(phone: "+442079460958"))
         XCTAssertEqual(sent?.resendAfterSeconds, 30)
@@ -63,13 +63,14 @@ final class AuthServiceLedveryPhoneTests: XCTestCase {
             """)
         }
         // iOS can hand the code over with a space in the middle.
-        let signIn = assertApiSuccess(await auth.signInWithLedveryPhone(phone: "+14155550134", code: " 123 456 "))
+        let signIn = assertApiSuccess(await auth.signInWithLedveryPhone(phone: "+14155550134", code: " 123 456 ", attemptId: "01a15f00-0000-7000-8000-000000000001"))
         XCTAssertEqual(signIn?.user.id, "usr_phone1")
         XCTAssertNil(signIn?.user.email)
         XCTAssertEqual(signIn?.user.phone, "+14155550134")
         XCTAssertEqual(signIn?.isNewUser, true)
         XCTAssertEqual(body?["phone"] as? String, "+14155550134")
         XCTAssertEqual(body?["code"] as? String, "123456")
+        XCTAssertEqual(body?["attempt_id"] as? String, "01a15f00-0000-7000-8000-000000000001")
         let token = await app.sessionManager.sessionToken
         XCTAssertEqual(token, "sess_phone")
     }
@@ -80,7 +81,7 @@ final class AuthServiceLedveryPhoneTests: XCTestCase {
         MockURLProtocol.requestHandler = { _ in
             self.refusal(400, "PHONE_CODE_INVALID", "That code is not right or is too old. Ask for a new one.")
         }
-        let result = await auth.signInWithLedveryPhone(phone: "+14155550134", code: "000000")
+        let result = await auth.signInWithLedveryPhone(phone: "+14155550134", code: "000000", attemptId: "01a15f00-0000-7000-8000-000000000001")
         XCTAssertEqual(result.error?.rawCode, AuthService.phoneCodeInvalidCode)
         XCTAssertEqual(result.error?.message, "That code is not right or is too old. Ask for a new one.")
         let token = await app.sessionManager.sessionToken
@@ -127,7 +128,8 @@ final class PhoneNumberTests: XCTestCase {
     func testWhatCannotBeANumberIsRefused() {
         for typed in ["", "555-0134", "415 555 01345", "0415 555 0134", "+0 415 555 0134", "reader@example.com",
                       "call me 4155550134", "415555013x", "+1+4155550134", "📞4155550134", "Пламен", "山田4155550134",
-                      "+1234567", "½4155550134", "+1234567890123456"] {
+                      "+1234567", "½4155550134", "+1234567890123456", "+11111111", "+441234567",
+                      "+1 415 555 013", "+1 415 555 01345", "115 555 0134", "415 155 0134", "+1 015 555 0134"] {
             XCTAssertNil(PhoneNumber(typed: typed), typed)
         }
     }

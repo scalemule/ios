@@ -23,17 +23,25 @@ public struct PhoneNumber: Sendable, Equatable {
         // Digits from any keyboard (Arabic-Indic, for one) are folded to 0-9.
         let number = trimmed.compactMap(\.wholeNumberValue).map(String.init).joined()
 
+        let digits: String
         if trimmed.hasPrefix("+") {
-            // International form: 8 to 15 digits, never starting with 0.
-            guard (8...15).contains(number.count), number.first != "0" else { return nil }
-            e164 = "+" + number
-        } else if number.count == 10, number.first != "0", number.first != "1" {
-            e164 = "+1" + number
+            digits = number
+        } else if number.count == 10 {
+            digits = "1" + number
         } else if number.count == 11, number.first == "1" {
-            e164 = "+" + number
+            digits = number
         } else {
             return nil
         }
+        // International form: 10 to 15 digits, never starting with 0. A
+        // United States or Canada number is 1, then ten digits whose area
+        // code and exchange each start with 2 to 9.
+        guard (10...15).contains(digits.count), digits.first != "0" else { return nil }
+        if digits.first == "1" {
+            let all = Array(digits)
+            guard all.count == 11, ("2"..."9").contains(all[1]), ("2"..."9").contains(all[4]) else { return nil }
+        }
+        e164 = "+" + digits
     }
 
     /// "+1 (415) 555-0134" for a United States or Canada number; otherwise

@@ -13,7 +13,7 @@ import ScaleMuleCore
 //     case .success(let sent): // show the code screen; sent.resendAfterSeconds
 //     case .failure(let error): // show error.message
 //     }
-//     switch await auth.signInWithLedveryPhone(phone: number.e164, code: code) {
+//     switch await auth.signInWithLedveryPhone(phone: number.e164, code: code, attemptId: sent.attemptId) {
 //     case .success(let signIn): // signed in; signIn.isNewUser
 //     case .failure(let error):  // rawCode == phoneCodeInvalidCode: ask again
 //     }
@@ -29,6 +29,9 @@ import ScaleMuleCore
 public struct LedveryPhoneCodeSent: Sendable, Equatable, Decodable {
     /// The number the code went to, as the server stores it.
     public let phone: String
+    /// Names this code. Hand it back with the code: only the device that
+    /// asked for a code can try it. A new code has a new one.
+    public let attemptId: String
     /// How long to wait before offering "Send a new code".
     public let resendAfterSeconds: Int
     /// How long the code can be used.
@@ -36,12 +39,14 @@ public struct LedveryPhoneCodeSent: Sendable, Equatable, Decodable {
 
     private enum CodingKeys: String, CodingKey {
         case phone
+        case attemptId = "attempt_id"
         case resendAfterSeconds = "resend_after_seconds"
         case expiresInSeconds = "expires_in_seconds"
     }
 
-    public init(phone: String, resendAfterSeconds: Int, expiresInSeconds: Int) {
+    public init(phone: String, attemptId: String, resendAfterSeconds: Int = 30, expiresInSeconds: Int = 600) {
         self.phone = phone
+        self.attemptId = attemptId
         self.resendAfterSeconds = resendAfterSeconds
         self.expiresInSeconds = expiresInSeconds
     }
@@ -49,6 +54,7 @@ public struct LedveryPhoneCodeSent: Sendable, Equatable, Decodable {
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         phone = try values.decode(String.self, forKey: .phone)
+        attemptId = try values.decode(String.self, forKey: .attemptId)
         resendAfterSeconds = try values.decodeIfPresent(Int.self, forKey: .resendAfterSeconds) ?? 30
         expiresInSeconds = try values.decodeIfPresent(Int.self, forKey: .expiresInSeconds) ?? 600
     }
@@ -87,14 +93,20 @@ extension AuthService {
     }
 
     /// Checks the texted code and signs the person in, creating their account
-    /// the first time. The session is stored like any other sign-in.
-    public func signInWithLedveryPhone(phone: String, code: String) async -> ApiResponse<LedveryPhoneSignIn> {
+    /// the first time. `attemptId` is the one `sendLedveryPhoneCode` answered
+    /// for this code. The session is stored like any other sign-in.
+    public func signInWithLedveryPhone(
+        phone: String,
+        code: String,
+        attemptId: String
+    ) async -> ApiResponse<LedveryPhoneSignIn> {
         let result: ApiResponse<OAuthCallbackResult> = await client.request(RequestOptions(
             method: .post,
             path: Self.ledveryPhonePath("verify"),
             body: [
                 "phone": phone.trimmingCharacters(in: .whitespacesAndNewlines),
                 "code": code.filter { !$0.isWhitespace },
+                "attempt_id": attemptId,
             ],
             credential: .none,
             retryable: false
