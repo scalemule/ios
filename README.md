@@ -119,6 +119,36 @@ The sheet shares Safari's cookies, so someone already signed in to Ledvery on
 another ScaleMule site continues in one tap. `startLedverySignIn` and
 `completeLedverySignIn` are available for apps that present the web page themselves.
 
+## Email accounts on your own screens (Ledvery)
+
+An app's own Create Account and Sign In screens can use the shared email
+account, with no web page. The account works in every ScaleMule app, like the
+Google sign-in above. The platform must have native email sign-in enabled for
+the application (`rawCode == AuthService.nativeEmailNotEnabledCode` otherwise).
+
+```swift
+// Create Account: a six-digit code is emailed; nobody is signed in yet
+_ = await auth.registerLedveryEmailAccount(email: email, password: password, name: name)
+_ = await auth.confirmLedveryEmail(email: email, code: code)   // resendLedveryEmailCode(email:)
+
+// Sign In
+switch await auth.signInWithLedveryEmail(email: email, password: password) {
+case .success(.signedIn(let user, _)):
+    print(user.id)
+case .success(.emailConfirmationRequired):
+    break // show the code screen, then sign in again
+case .success(.mfaCodeRequired):
+    break // ask for the code and call again with mfaCode
+case .success(.linkRequired(let challenge)):
+    break // linkLedveryAccount(challengeId: challenge.challengeId, password: ...)
+case .failure(let error):
+    print(error.message) // AuthService.invalidCredentialsCode never says which part was wrong
+}
+
+// Forgot password: emails a link to a web page
+_ = await auth.sendLedveryPasswordReset(email: email)
+```
+
 ## Photo feed (Social + Photos)
 
 A photo feed is a Social post whose `mediaIds` hold Photos ids. Every app
