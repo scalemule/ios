@@ -31,7 +31,7 @@ final class AuthServiceLedveryPhoneTests: XCTestCase {
             """)
         }
         let sent = assertApiSuccess(await auth.sendLedveryPhoneCode(phone: " +14155550134 "))
-        XCTAssertEqual(sent, LedveryPhoneCodeSent(phone: "+14155550134", resendAfterSeconds: 45, expiresInSeconds: 600))
+        XCTAssertEqual(sent, LedveryPhoneCodeSent(phone: "+14155550134", attemptId: "01a15f00-0000-7000-8000-000000000001", resendAfterSeconds: 45, expiresInSeconds: 600))
         XCTAssertEqual(body?["phone"] as? String, "+14155550134", "trimmed")
         let token = await app.sessionManager.sessionToken
         XCTAssertNil(token)
