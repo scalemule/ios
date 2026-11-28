@@ -149,6 +149,48 @@ case .failure(let error):
 _ = await auth.sendLedveryPasswordReset(email: email)
 ```
 
+
+## Phone accounts on your own screens (Ledvery)
+
+A person types a phone number, gets a six-digit code by text and is signed in.
+There is no password and no email address. The same two calls create the
+account the first time and sign in every time after, and the account works in
+every ScaleMule app. The platform must have native phone sign-in enabled for
+the app; until then both calls fail with
+`rawCode == AuthService.nativePhoneNotEnabledCode`.
+
+```swift
+// 1. Check what was typed before any text is sent.
+guard let number = PhoneNumber(typed: typed) else { /* ask again */ return }
+
+// 2. Text the code. Keep `attemptId`: it goes back with the code.
+let sent: LedveryPhoneCodeSent
+switch await auth.sendLedveryPhoneCode(phone: number.e164) {
+case .success(let answer): sent = answer        // show the code screen
+case .failure(let error):                        // show error.userFacingMessage
+    return                                       // error.code == .rateLimited: asked too often
+}
+
+// 3. Check the code. This signs the person in.
+switch await auth.signInWithLedveryPhone(phone: number.e164, code: code, attemptId: sent.attemptId) {
+case .success(let signIn): break                 // signIn.user, signIn.isNewUser
+case .failure(let error): break                  // rawCode == phoneCodeInvalidCode: ask again
+}
+```
+
+- Give the code field `.textContentType(.oneTimeCode)` and a number pad: iOS
+  offers the code from Messages above the keyboard. Check the code as soon as
+  six digits are in, so the person never presses a button.
+- "Send a new code" calls `sendLedveryPhoneCode` again, after
+  `sent.resendAfterSeconds`. A new code has a new `attemptId`; use the newest.
+- `PhoneNumber(typed:)` reads a number without a country code as United States
+  or Canada and refuses what cannot be texted. `PhoneNumber.display(_:)` writes
+  a United States number the usual way for the code screen.
+- Each application texts only the countries on its list (United States and
+  Canada unless changed) and has a daily number of texts; `phoneNotSupportedCode`
+  and `.rateLimited` are the answers.
+- A person with a phone account has no email: `AuthUser.email` is `nil`.
+
 ## Photo feed (Social + Photos)
 
 A photo feed is a Social post whose `mediaIds` hold Photos ids. Every app
