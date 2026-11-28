@@ -183,6 +183,13 @@ case .failure(let error): break                  // rawCode == phoneCodeInvalidC
   six digits are in, so the person never presses a button.
 - "Send a new code" calls `sendLedveryPhoneCode` again, after
   `sent.resendAfterSeconds`. A new code has a new `attemptId`; use the newest.
+- For a country picker in front of the number, like the web SDK's `PhoneInput`:
+  keep a `PhoneCountry` (it starts on `PhoneCountry.unitedStates`), show
+  `country.flag` and `country.dialCode` on a button, present
+  `PhoneCountryPicker(selection: $country) { showing = false }` in a sheet, and
+  build the number with `PhoneNumber(local: typed, country: country)`. The list
+  is the same as `PHONE_COUNTRIES` in `@scalemule/ui`. To fill the field from a
+  stored number use `number.country` and `number.localDisplay`.
 - `PhoneNumber(typed:)` reads a number without a country code as United States
   or Canada and refuses what cannot be texted. `PhoneNumber.display(_:)` writes
   a United States number the usual way for the code screen.
