@@ -55,7 +55,7 @@ public struct PhoneCountryPicker: View {
                 }
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("\(country.name), \(country.dialCode)")
-                .accessibilityAddTraits(country == selection ? .isSelected : [])
+                .accessibilityAddTraits(country == selection ? [.isButton, .isSelected] : .isButton)
                 .accessibilityIdentifier("phoneCountry-\(country.code)")
             }
             .listStyle(.plain)
